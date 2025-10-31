@@ -19,7 +19,7 @@ head(data_countries_euro)
 
 
 ##---------------------------------------------------------------------
-## Organizing the data
+## Organizing the data, fist arrange the form and then havind the gdp growth
 ##---------------------------------------------------------------------
 
 data_countries_euro_prepared <- data_countries_euro %>%
@@ -36,9 +36,15 @@ data_countries_euro_prepared <- data_countries_euro_prepared %>%
   mutate(Quarter = as.yearqtr(Quarter, format = "%Y-Q%q"))
 
 
+#Have it into gdp growth
 
+data_countries_euro_growth_gdp <- data_countries_euro_prepared 
 
+data_countries_euro_growth_gdp <- data_countries_euro_growth_gdp %>%
+  group_by(Country) %>%
+  arrange(Quarter) %>%
+  mutate(gdp_growth = (Nominal_GDP / lag(Nominal_GDP) - 1) * 100)
 
-
-
+data_countries_euro_growth_gdp <- data_countries_euro_growth_gdp %>%
+  arrange(Country, Quarter)
 
