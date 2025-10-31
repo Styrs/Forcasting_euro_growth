@@ -38,13 +38,13 @@ data_countries_euro_prepared <- data_countries_euro_prepared %>%
 
 #Have it into gdp growth
 
-data_countries_euro_growth_gdp <- data_countries_euro_prepared 
+data_countries_euro_Growth_GDP_unseasonnalized <- data_countries_euro_prepared 
 
-data_countries_euro_growth_gdp <- data_countries_euro_growth_gdp %>%
+data_countries_euro_Growth_GDP_unseasonnalized <- data_countries_euro_Growth_GDP_unseasonnalized %>%
   group_by(Country) %>%
   arrange(Quarter) %>%
   mutate(gdp_growth = (Nominal_GDP / lag(Nominal_GDP) - 1) * 100)
 
-data_countries_euro_growth_gdp <- data_countries_euro_growth_gdp %>%
+data_countries_euro_Growth_GDP_unseasonnalized <- data_countries_euro_Growth_GDP_unseasonnalized %>%
   arrange(Country, Quarter)
 
