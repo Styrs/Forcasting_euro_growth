@@ -1,0 +1,829 @@
+# =========================================================
+# 0) Packages
+# =========================================================
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(zoo)
+library(ggplot2)
+library(tseries)
+library(forecast)
+library(purrr)
+library(tibble)
+
+# =========================================================
+# 1) Import & préparation (un seul flux)
+#    -> On part du fichier "unseasonnalized" fourni
+# =========================================================
+url_euro_growth_gdp <- "https://github.com/Styrs/Forcasting_euro_growth/raw/refs/heads/main/data_countries_euro_Growth_GDP_unseasonnalized.xlsx"
+download.file(url_euro_growth_gdp, destfile = "data.xlsx", mode = "wb")
+
+df0 <- read_excel("data.xlsx")
+
+# Noms propres + types
+df <- df0 %>%
+  rename(Country = Country, Quarter = Quarter, gdp_growth = gdp_growth) %>%
+  mutate(
+    Quarter    = as.yearqtr(Quarter, format = "%Y-Q%q"),
+    gdp_growth = as.numeric(gdp_growth)
+  ) %>%
+  arrange(Country, Quarter)
+
+# Sanity check
+stopifnot(all(c("Country","Quarter","gdp_growth") %in% names(df)))
+
+# =========================================================
+# 2) Plot propre (on retire juste les NA au moment du tracé)
+# =========================================================
+df %>%
+  filter(!is.na(gdp_growth)) %>%
+  ggplot(aes(x = as.Date(Quarter), y = gdp_growth, color = Country, group = Country)) +
+  geom_line(linewidth = 0.9, alpha = 0.9, na.rm = TRUE) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Quarterly GDP Growth by Country", x = "Quarter", y = "GDP growth (%)", color = "Country") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+
+# =========================================================
+# 3) Test ADF par pays (sans reframe, warning étouffé)
+# =========================================================
+safe_adf <- function(x){
+  x <- stats::na.omit(as.numeric(x))
+  if (length(x) < 12) {
+    return(tibble(n = length(x), adf_stat = NA_real_, p_value = NA_real_, note = "too short"))
+  }
+  test <- withCallingHandlers(
+    tseries::adf.test(x, k = floor(length(x)^(1/3))),
+    warning = function(w){
+      if (grepl("p-value smaller than printed p-value", conditionMessage(w))) invokeRestart("muffleWarning")
+    }
+  )
+  tibble(n = length(x), adf_stat = unname(test$statistic), p_value = test$p.value, note = NA_character_)
+}
+
+adf_results <- df %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  summarise(res = list(safe_adf(gdp_growth)), .groups = "drop") %>%
+  unnest(res)
+
+print(adf_results, n = Inf)
+
+# =========================================================
+# 4) Désaisonnalisation STL alignée (pas de décalage)
+#    - On ne "na.omit" PAS la série entière: on ajuste sur la sous-série non-NA
+#    - Puis on réinsère les NA aux mêmes positions
+# =========================================================
+stl_adjust <- function(x, freq = 4){
+  # x: vecteur numeric avec NA possibles
+  ix <- !is.na(x)
+  out <- rep(NA_real_, length(x))
+  if (sum(ix) >= 12) {
+    ts_x <- ts(x[ix], frequency = freq)
+    fit  <- stl(ts_x, s.window = "periodic")
+    out[ix] <- as.numeric(seasadj(fit))
+  }
+  out
+}
+
+df_seas <- df %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  mutate(gdp_growth_seas = stl_adjust(gdp_growth, freq = 4)) %>%
+  ungroup()
+
+# Exemple de plot sans warning (NA retirés uniquement pour tracer)
+df_seas %>%
+  filter(Country == "France", !is.na(gdp_growth_seas)) %>%
+  ggplot(aes(x = as.Date(Quarter), y = gdp_growth_seas)) +
+  geom_line() +
+  labs(title = "France – GDP growth (seasonally adjusted STL)", x = NULL, y = "% q/q")
+
+# =========================================================
+# 5) (Option) Table finale nettoyée pour la suite des modèles
+#    -> on garde deux colonnes: brute et désaisonnalisée
+# =========================================================
+clean_panel <- df_seas %>%
+  select(Country, Quarter, gdp_growth, gdp_growth_seas)
+
+# Par sécurité, retire les lignes où tout est NA (rare)
+clean_panel <- clean_panel %>%
+  filter(!(is.na(gdp_growth) & is.na(gdp_growth_seas)))
+
+# Tu peux sauvegarder si besoin :
+# writexl::write_xlsx(list(raw=df, seas=clean_panel), "growth_cleaned.xlsx")
+
+### commence ici !!!
+# df = ton data.frame propre (Country, Quarter en as.yearqtr, gdp_growth numeric)
+library(ggplot2)
+df %>%
+  filter(!is.na(gdp_growth)) %>%   # <-- élimine les NA au tracé
+  ggplot(aes(x = as.Date(Quarter), y = gdp_growth, color = Country, group = Country)) +
+  geom_line(linewidth = 0.9, alpha = 0.9, na.rm = TRUE) +  # <-- sécurité en plus
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Quarterly GDP Growth by Country", x = "Quarter", y = "GDP growth (%)", color = "Country") +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+
+library(dplyr)
+library(tidyr)
+library(tseries)
+library(tibble)
+
+# Fonction ADF "safe"
+safe_adf <- function(x){
+  x <- stats::na.omit(as.numeric(x))
+  if (length(x) < 12) {
+    return(tibble(n = length(x), adf_stat = NA_real_, p_value = NA_real_, note = "too short"))
+  }
+  test <- withCallingHandlers(
+    tseries::adf.test(x, k = floor(length(x)^(1/3))),
+    warning = function(w){
+      if (grepl("p-value smaller than printed p-value", conditionMessage(w))) {
+        invokeRestart("muffleWarning")   # <-- étouffe ce warning
+      }
+    }
+  )
+  tibble(n = length(x), adf_stat = unname(test$statistic), p_value = test$p.value, note = NA_character_)
+}
+
+# Remplace ton bloc reframe() par ceci
+adf_results <- df %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  summarise(res = list(safe_adf(gdp_growth)), .groups = "drop") %>%
+  unnest(res)
+
+adf_results
+#### Arret ici !!!
+
+### ACF/PCAF -> Pas le bon !!!!
+# =========================
+# NA handling de bout en bout
+# =========================
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(zoo)
+library(writexl)
+
+## 1) Import
+url_euro_countries <- "https://github.com/Styrs/Forcasting_euro_growth/raw/refs/heads/main/Countries_Excel_euro_GDP.xlsx"
+download.file(url_euro_countries, destfile = "data.xlsx", mode = "wb")
+data_countries_euro <- read_excel("data.xlsx")
+
+## 2) Long format + typage
+data_countries_euro_prepared <- data_countries_euro %>%
+  rename(Country = TIME) %>%
+  pivot_longer(
+    cols = -Country,
+    names_to = "Quarter",
+    values_to = "Nominal_GDP"
+  ) %>%
+  mutate(
+    Quarter = as.yearqtr(Quarter, format = "%Y-Q%q"),
+    Nominal_GDP = as.numeric(Nominal_GDP)
+  )
+
+## 3) Compléter le calendrier trimestriel par pays
+##    (remplit les trimestres manquants entre min et max)
+data_countries_euro_prepared <- data_countries_euro_prepared %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  tidyr::complete(
+    Quarter = seq(min(Quarter, na.rm = TRUE), max(Quarter, na.rm = TRUE), by = 1/4)
+  ) %>%
+  ungroup()
+
+## 4) Imputation des NA de Nominal_GDP
+##    - interpolation linéaire (na.approx)
+##    - extrapolation aux bords (rule = 2) si besoin
+##    - si une série est ENTIEREMENT NA, on la laisse NA (sera filtrée plus tard)
+data_countries_euro_prepared <- data_countries_euro_prepared %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  mutate(
+    Nominal_GDP = {
+      x <- Nominal_GDP
+      if (all(is.na(x))) x else zoo::na.approx(x, na.rm = FALSE, rule = 2)
+    }
+  ) %>%
+  ungroup()
+
+## 5) Calcul de la croissance q/q (%) et nettoyage final des NA
+data_countries_euro_Growth_GDP_unseasonnalized <- data_countries_euro_prepared %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  mutate(
+    gdp_growth = 100 * (Nominal_GDP / dplyr::lag(Nominal_GDP) - 1)
+  ) %>%
+  ungroup() %>%
+  arrange(Country, Quarter) %>%
+  # retire les lignes où la croissance est NA (1er trimestre par pays ou séries vides)
+  filter(!is.na(gdp_growth))
+
+## 6) (Option) Export propre
+# writexl::write_xlsx(list(growth=data_countries_euro_Growth_GDP_unseasonnalized),
+#                     path = "data_growth_clean.xlsx")
+
+### traitement des valeurs manquantes -> Le bon graph : quartelu GDP Growth (seasonally adjusted)
+# =========================
+# 0) Packages
+# =========================
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(zoo)
+library(ggplot2)
+library(tseries)
+library(forecast)
+library(tibble)
+library(purrr)
+
+# =========================
+# 1) Import
+# =========================
+url <- "https://github.com/Styrs/Forcasting_euro_growth/raw/refs/heads/main/Countries_Excel_euro_GDP.xlsx"
+download.file(url, destfile = "data.xlsx", mode = "wb")
+raw <- read_excel("data.xlsx")
+
+# =========================
+# 2) Mise en forme + calendrier complet + imputation NA
+# =========================
+panel <- raw %>%
+  rename(Country = TIME) %>%
+  pivot_longer(-Country, names_to = "Quarter", values_to = "Nominal_GDP") %>%
+  mutate(
+    Quarter = as.yearqtr(Quarter, format = "%Y-Q%q"),
+    Nominal_GDP = as.numeric(Nominal_GDP)
+  ) %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  complete(Quarter = seq(min(Quarter, na.rm = TRUE), max(Quarter, na.rm = TRUE), by = 1/4)) %>%
+  mutate(
+    # Interpolation + extrapolation (rule = 2) si trous en bord
+    Nominal_GDP = {
+      x <- Nominal_GDP
+      if (all(is.na(x))) x else zoo::na.approx(x, na.rm = FALSE, rule = 2)
+    }
+  ) %>%
+  ungroup()
+
+# =========================
+# 3) Croissance q/q (%) et nettoyage NA résiduels
+# =========================
+df <- panel %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  mutate(gdp_growth = 100 * (Nominal_GDP / lag(Nominal_GDP) - 1)) %>%
+  ungroup()
+
+# =========================
+# 4) Désaisonnalisation STL alignée (sans décalage)
+# =========================
+stl_adjust <- function(x, freq = 4){
+  ix <- !is.na(x)
+  out <- rep(NA_real_, length(x))
+  if (sum(ix) >= 12) {
+    fit <- stl(ts(x[ix], frequency = freq), s.window = "periodic")
+    out[ix] <- as.numeric(seasadj(fit))
+  }
+  out
+}
+df_seas <- df %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  mutate(gdp_growth_seas = stl_adjust(gdp_growth, 4)) %>%
+  ungroup()
+
+# =========================
+# 5) Plots SANS warnings (on filtre les NA au tracé)
+# =========================
+df %>%
+  filter(!is.na(gdp_growth)) %>%
+  ggplot(aes(x = as.Date(Quarter), y = gdp_growth, color = Country, group = Country)) +
+  geom_line(linewidth = 0.9, alpha = 0.9, na.rm = TRUE) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Quarterly GDP Growth by Country (raw)", x = NULL, y = "% q/q") +
+  theme_minimal(base_size = 12) + theme(legend.position = "bottom")
+
+df_seas %>%
+  filter(!is.na(gdp_growth_seas)) %>%
+  ggplot(aes(x = as.Date(Quarter), y = gdp_growth_seas, color = Country, group = Country)) +
+  geom_line(linewidth = 0.9, alpha = 0.9, na.rm = TRUE) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Quarterly GDP Growth by Country (seasonally adjusted)", x = NULL, y = "% q/q") +
+  theme_minimal(base_size = 12) + theme(legend.position = "bottom")
+
+# =========================
+# 6) ADF SANS reframe() et SANS warning “p-value smaller…”
+# =========================
+safe_adf <- function(x){
+  x <- stats::na.omit(as.numeric(x))
+  if (length(x) < 12) {
+    return(tibble(n = length(x), k = NA_integer_, adf_stat = NA_real_, p_value = NA_real_, decision_5 = NA_character_))
+  }
+  k <- max(0, min(floor(length(x)^(1/3)), length(x) - 2))
+  test <- withCallingHandlers(
+    tseries::adf.test(x, k = k),
+    warning = function(w){
+      if (grepl("p-value smaller than printed p-value", conditionMessage(w))) invokeRestart("muffleWarning")
+    }
+  )
+  tibble(
+    n = length(x), k = k,
+    adf_stat = unname(test$statistic),
+    p_value  = test$p.value,
+    decision_5 = ifelse(test$p.value < 0.05, "Stationnaire", "Non-stationnaire")
+  )
+}
+
+adf_results_raw <- df %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  summarise(res = list(safe_adf(gdp_growth)), .groups = "drop") %>%
+  tidyr::unnest(res)
+
+adf_results_seas <- df_seas %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  summarise(res = list(safe_adf(gdp_growth_seas)), .groups = "drop") %>%
+  tidyr::unnest(res)
+
+print(adf_results_raw,  n = 10)
+print(adf_results_seas, n = 10)
+
+### ACF/PACF -> bonne version !!!
+# =========================
+# 0) Packages
+# =========================
+suppressPackageStartupMessages({
+  library(readxl); library(dplyr); library(tidyr); library(zoo)
+  library(ggplot2); library(tseries); library(forecast)
+  library(tibble); library(purrr); library(readr)
+})
+dir.create("outputs", showWarnings = FALSE)
+
+# =========================
+# 1) Import + mise en forme (long)
+# =========================
+url <- "https://github.com/Styrs/Forcasting_euro_growth/raw/refs/heads/main/Countries_Excel_euro_GDP.xlsx"
+download.file(url, destfile = "data.xlsx", mode = "wb")
+raw <- read_excel("data.xlsx")
+
+panel <- raw %>%
+  rename(Country = TIME) %>%
+  pivot_longer(-Country, names_to = "Quarter", values_to = "Nominal_GDP") %>%
+  mutate(
+    Quarter = as.yearqtr(Quarter, format = "%Y-Q%q"),
+    Nominal_GDP = as.numeric(Nominal_GDP)
+  )
+
+# =========================
+# 2) Compléter calendrier + imputer NA (interpolation + extrapolation)
+# =========================
+panel_full <- panel %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  complete(Quarter = seq(min(Quarter, na.rm = TRUE), max(Quarter, na.rm = TRUE), by = 1/4)) %>%
+  mutate(
+    Nominal_GDP = {
+      x <- Nominal_GDP
+      if (all(is.na(x))) x else zoo::na.approx(x, na.rm = FALSE, rule = 2)
+    }
+  ) %>%
+  ungroup()
+
+# =========================
+# 3) Croissance q/q (%) + table propre df
+# =========================
+df <- panel_full %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  mutate(gdp_growth = 100 * (Nominal_GDP / lag(Nominal_GDP) - 1)) %>%
+  ungroup()
+
+# =========================
+# 4) Désaisonnalisation STL alignée (pas de décalage)
+# =========================
+stl_adjust <- function(x, freq = 4){
+  ix <- !is.na(x)
+  out <- rep(NA_real_, length(x))
+  if (sum(ix) >= 12) {
+    fit <- stl(ts(x[ix], frequency = freq), s.window = "periodic")
+    out[ix] <- as.numeric(seasadj(fit))
+  }
+  out
+}
+
+df_seas <- df %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  mutate(gdp_growth_seas = stl_adjust(gdp_growth, 4)) %>%
+  ungroup()
+
+# =========================
+# 5) Plots globaux SANS warnings (filtre NA au tracé)
+# =========================
+p_raw <- df %>%
+  filter(!is.na(gdp_growth)) %>%
+  ggplot(aes(x = as.Date(Quarter), y = gdp_growth, color = Country, group = Country)) +
+  geom_line(linewidth = 0.9, alpha = 0.9, na.rm = TRUE) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Quarterly GDP Growth by Country (raw)", x = NULL, y = "% q/q") +
+  theme_minimal(base_size = 12) + theme(legend.position = "bottom")
+ggsave("outputs/gdp_growth_raw.png", p_raw, width = 10, height = 6, dpi = 300)
+
+p_seas <- df_seas %>%
+  filter(!is.na(gdp_growth_seas)) %>%
+  ggplot(aes(x = as.Date(Quarter), y = gdp_growth_seas, color = Country, group = Country)) +
+  geom_line(linewidth = 0.9, alpha = 0.9, na.rm = TRUE) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(title = "Quarterly GDP Growth by Country (seasonally adjusted, STL)", x = NULL, y = "% q/q") +
+  theme_minimal(base_size = 12) + theme(legend.position = "bottom")
+ggsave("outputs/gdp_growth_seas.png", p_seas, width = 10, height = 6, dpi = 300)
+
+# =========================
+# 6) ADF robuste (sans reframe, warning étouffé)
+# =========================
+safe_adf <- function(x){
+  x <- stats::na.omit(as.numeric(x))
+  if (length(x) < 12) {
+    return(tibble(n = length(x), k = NA_integer_, adf_stat = NA_real_, p_value = NA_real_, decision_5 = NA_character_))
+  }
+  k <- max(0, min(floor(length(x)^(1/3)), length(x) - 2))
+  test <- withCallingHandlers(
+    tseries::adf.test(x, k = k),
+    warning = function(w){
+      if (grepl("p-value smaller than printed p-value", conditionMessage(w))) invokeRestart("muffleWarning")
+    }
+  )
+  tibble(
+    n = length(x), k = k,
+    adf_stat = unname(test$statistic),
+    p_value  = test$p.value,
+    decision_5 = ifelse(test$p.value < 0.05, "Stationnaire", "Non-stationnaire")
+  )
+}
+
+adf_raw <- df %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  summarise(res = list(safe_adf(gdp_growth)), .groups = "drop") %>%
+  unnest(res)
+write_csv(adf_raw, "outputs/adf_results_raw.csv")
+
+adf_seas <- df_seas %>%
+  group_by(Country) %>%
+  arrange(Quarter, .by_group = TRUE) %>%
+  summarise(res = list(safe_adf(gdp_growth_seas)), .groups = "drop") %>%
+  unnest(res)
+write_csv(adf_seas, "outputs/adf_results_seas.csv")
+
+# =========================
+# 7) ACF/PACF (plots + p,q suggérés)
+# =========================
+last_sig_lag <- function(acf_obj, n){
+  if (is.null(acf_obj) || is.null(acf_obj$acf)) return(0)
+  thr <- 1.96 / sqrt(n)
+  vals <- acf_obj$acf[-1]
+  sig  <- which(abs(vals) > thr)
+  if (length(sig) == 0) 0 else max(sig)
+}
+
+suggest_pq_vec <- function(x, lag.max = 12){
+  x <- stats::na.omit(as.numeric(x))
+  if (length(x) < 12) return(tibble(p_suggest = 0L, q_suggest = 0L, note = "short series"))
+  tsx <- ts(x, frequency = 4)
+  a  <- tryCatch(acf(tsx,  plot = FALSE, lag.max = lag.max),  error = function(e) NULL)
+  pa <- tryCatch(pacf(tsx, plot = FALSE, lag.max = lag.max), error = function(e) NULL)
+  n  <- length(tsx)
+  tibble(
+    p_suggest = as.integer(last_sig_lag(pa, n)),  # PACF -> AR(p)
+    q_suggest = as.integer(last_sig_lag(a,  n))   # ACF  -> MA(q)
+  )
+}
+
+suggest_pq_by_country <- function(data, countries, value_col = "gdp_growth_seas", lag.max = 12){
+  stopifnot(all(c("Country", value_col) %in% names(data)))
+  data %>%
+    filter(Country %in% countries) %>%
+    group_by(Country) %>%
+    summarise(suggest = list(suggest_pq_vec(.data[[value_col]], lag.max = lag.max)), .groups = "drop") %>%
+    unnest(suggest) %>%
+    arrange(Country)
+}
+
+plot_acf_pacf <- function(data, country, value_col = "gdp_growth_seas", lag.max = 12){
+  x <- data %>% filter(Country == country) %>% pull(all_of(value_col)) %>% stats::na.omit()
+  if (length(x) < 12) { message(country, ": série trop courte pour ACF/PACF."); return(invisible(NULL)) }
+  tsx <- ts(x, frequency = 4)
+  p <- forecast::ggtsdisplay(tsx, plot_type = "partial", lag.max = lag.max) +
+    ggtitle(paste(country, "—", value_col, "(ACF / PACF)"))
+  print(p)
+  ggsave(file.path("outputs", paste0("acf_pacf_", gsub(" ", "_", tolower(country)), "_", value_col, ".png")),
+         p, width = 8, height = 5, dpi = 300)
+}
+
+countries <- c("France","Italy","Poland","Spain","European Union")
+
+orders_seas <- suggest_pq_by_country(df_seas, countries, value_col = "gdp_growth_seas", lag.max = 12)
+write_csv(orders_seas, "outputs/orders_pq_suggested_seasonal.csv")
+print(orders_seas, n = Inf)
+
+invisible(lapply(countries, function(ctry)
+  plot_acf_pacf(df_seas, ctry, value_col = "gdp_growth_seas", lag.max = 12)
+))
+
+# (Option) Sur séries brutes :
+# orders_raw <- suggest_pq_by_country(df, countries, value_col = "gdp_growth", lag.max = 12)
+# write_csv(orders_raw, "outputs/orders_pq_suggested_raw.csv")
+# invisible(lapply(countries, function(ctry)
+#   plot_acf_pacf(df, ctry, value_col = "gdp_growth", lag.max = 12)
+# ))
+
+### Forcast pour 2026 Q4 
+##### Etape 0: donnée utilitaire 
+# --- Packages déjà chargés plus haut ---
+library(dplyr); library(tidyr); library(forecast); library(tibble)
+library(ggplot2); library(readr); library(zoo); library(purrr)
+
+dir.create("outputs", showWarnings = FALSE)
+
+# AICc sûr
+safe_AICc <- function(fit, n){
+  out <- tryCatch(forecast::AICc(fit), error = function(e) NA_real_)
+  if (is.finite(out)) return(out)
+  k <- tryCatch(length(fit$coef), error = function(e) NA_integer_)
+  a <- tryCatch(AIC(fit),        error = function(e) NA_real_)
+  if (!is.finite(k) || !is.finite(a) || (n - k - 1) <= 0) return(Inf)
+  a + 2*k*(k+1)/(n - k - 1)
+}
+
+# Grille autour de (p0,q0)
+grid_pq <- function(p0, q0, around = 1, pmax = 3, qmax = 3){
+  pset <- sort(unique(pmax(0, pmin(pmax, c(p0-around, p0, p0+around)))))
+  qset <- sort(unique(pmax(0, pmin(qmax, c(q0-around, q0, q0+around)))))
+  tidyr::expand_grid(p = pset, q = qset) |> dplyr::filter(!(p==0 & q==0))
+}
+
+# Sélection ARMA par AICc + Ljung-Box
+select_arma <- function(x, p0, q0, around = 1){
+  x <- stats::na.omit(as.numeric(x))
+  if (length(x) < 12 || length(unique(x)) < 3) {
+    return(list(best = tibble(p=NA, q=NA, AICc=Inf, lb_p=NA_real_), table = tibble(), note = "short/constant"))
+  }
+  tsx  <- ts(x, frequency = 4)
+  n    <- length(tsx)
+  grid <- grid_pq(p0, q0, around)
+  res <- purrr::pmap_dfr(grid, function(p, q){
+    fit <- tryCatch(Arima(tsx, order = c(p,0,q), include.mean = TRUE), error = function(e) NULL)
+    if (is.null(fit)) return(tibble(p=p, q=q, AICc=Inf, lb_p=NA_real_))
+    tibble(
+      p = p, q = q,
+      AICc = safe_AICc(fit, n),
+      lb_p = tryCatch(Box.test(residuals(fit), lag = 8, type = "Ljung-Box")$p.value, error = function(e) NA_real_)
+    )
+  }) |> arrange(AICc)
+  list(best = slice(res, 1), table = res, note = NA_character_)
+}
+
+# Horizon jusqu’à une cible (ex: "2026-Q4")
+h_to <- function(last_qtr, target_qtr_chr){
+  target <- zoo::as.yearqtr(target_qtr_chr, format = "%Y-Q%q")
+  h <- as.integer(round((as.numeric(target) - as.numeric(last_qtr)) * 4))
+  ifelse(h < 1, 1L, h)
+}
+
+# Forecast pour un pays avec ARMA(p,q)
+forecast_country_arma <- function(data, country, p, q, h){
+  x <- data |> filter(Country == country) |> pull(gdp_growth_seas) |> stats::na.omit()
+  if (length(x) < 12 || is.na(p) || is.na(q)) return(NULL)
+  tsx <- ts(x, frequency = 4)
+  fit <- tryCatch(Arima(tsx, order = c(p,0,q), include.mean = TRUE), error = function(e) NULL)
+  if (is.null(fit)) return(NULL)
+  fc  <- forecast(fit, h = h)
+  tibble(
+    Country = country,
+    horizon = seq_len(h),
+    mean    = as.numeric(fc$mean),
+    lower80 = as.numeric(fc$lower[, "80%"]),
+    upper80 = as.numeric(fc$upper[, "80%"]),
+    lower95 = as.numeric(fc$lower[, "95%"]),
+    upper95 = as.numeric(fc$upper[, "95%"])
+  )
+}
+
+# Plot prévision + historique (désais.)
+plot_fc_country <- function(ctry, fc_tbl, df_seas, arma_choices, target_qtr){
+  hist <- df_seas |> filter(Country == ctry, !is.na(gdp_growth_seas)) |>
+    transmute(date = as.Date(Quarter), value = gdp_growth_seas)
+  fc_c <- fc_tbl |> filter(Country == ctry)
+  if (nrow(fc_c) == 0 || nrow(hist) == 0) return(NULL)
+  
+  last_date <- max(hist$date)
+  steps     <- nrow(fc_c)
+  future_dates <- seq(from = zoo::as.Date(zoo::as.yearqtr(last_date) + 1/4),
+                      by = "quarter", length.out = steps)
+  
+  pd <- tibble(date = future_dates,
+               mean = fc_c$mean,
+               lower80 = fc_c$lower80, upper80 = fc_c$upper80,
+               lower95 = fc_c$lower95, upper95 = fc_c$upper95)
+  
+  p <- ggplot() +
+    geom_line(data = hist, aes(x = date, y = value), linewidth = 0.9, color = "grey30") +
+    geom_ribbon(data = pd, aes(x = date, ymin = lower95, ymax = upper95), alpha = 0.15) +
+    geom_ribbon(data = pd, aes(x = date, ymin = lower80, ymax = upper80), alpha = 0.25) +
+    geom_line(data = pd, aes(x = date, y = mean), linewidth = 1) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey40") +
+    labs(
+      title = paste0(ctry, " — ARMA forecast to ", target_qtr, " (seasonally adjusted)"),
+      subtitle = {
+        pq <- arma_choices |> filter(Country == ctry)
+        paste0("Model: ARMA(", pq$p, ",", pq$q, "); horizon = ", steps, " quarters")
+      },
+      x = NULL, y = "% q/q"
+    ) +
+    theme_minimal(base_size = 13)
+  ggsave(file.path("outputs", paste0("fc_", gsub(" ","_", tolower(ctry)), "_arma_seas_to_", gsub("-","",target_qtr), ".png")),
+         p, width = 9, height = 5, dpi = 300)
+  p
+}
+
+#### Etape 1: 2026 Q4 
+# 1) On part d'orders_seas (p_suggest, q_suggest) et df_seas déjà construits plus haut
+stopifnot(exists("orders_seas"), all(c("Country","p_suggest","q_suggest") %in% names(orders_seas)))
+last_q <- max(df_seas$Quarter, na.rm = TRUE)
+h_26   <- h_to(last_q, "2026-Q4")
+countries <- orders_seas$Country
+
+# 2) Sélection ARMA par pays (autour des ordres suggérés)
+arma_choices_26 <- orders_seas %>%
+  mutate(sel = purrr::map2(Country, row_number(),
+                           ~ select_arma(
+                             x  = df_seas %>% filter(Country == ..1) %>% pull(gdp_growth_seas),
+                             p0 = p_suggest[..2], q0 = q_suggest[..2], around = 1))) %>%
+  mutate(best = purrr::map(sel, "best")) %>%
+  tidyr::unnest(best) %>%
+  select(Country, p, q, AICc, lb_p)
+
+readr::write_csv(arma_choices_26, "outputs/arma_choices_seasonal_to_2026Q4.csv")
+print(arma_choices_26, n = Inf)
+
+# 3) Prévisions jusqu’à 2026-Q4
+fc_26 <- purrr::pmap_dfr(
+  arma_choices_26,
+  function(Country, p, q, AICc, lb_p){
+    forecast_country_arma(df_seas, Country, p, q, h_26)
+  }
+)
+readr::write_csv(fc_26, "outputs/forecast_arma_seasonal_to_2026Q4.csv")
+print(dplyr::slice_head(fc_26, n = 10))
+
+# 4) Graphiques
+invisible(lapply(arma_choices_26$Country, function(ctry)
+  plot_fc_country(ctry, fc_26, df_seas, arma_choices_26, "2026-Q4")
+))
+
+##### Etape 2: prevision 2027 Q4 
+h_27 <- h_to(last_q, "2027-Q4")
+
+# 1) (Re)Sélection ARMA par pays (optionnel mais recommandé si tu veux re-vérifier)
+arma_choices_27 <- orders_seas %>%
+  mutate(sel = purrr::map2(Country, row_number(),
+                           ~ select_arma(
+                             x  = df_seas %>% filter(Country == ..1) %>% pull(gdp_growth_seas),
+                             p0 = p_suggest[..2], q0 = q_suggest[..2], around = 1))) %>%
+  mutate(best = purrr::map(sel, "best")) %>%
+  tidyr::unnest(best) %>%
+  select(Country, p, q, AICc, lb_p)
+
+readr::write_csv(arma_choices_27, "outputs/arma_choices_seasonal_to_2027Q4.csv")
+print(arma_choices_27, n = Inf)
+
+# 2) Prévisions jusqu’à 2027-Q4
+fc_27 <- purrr::pmap_dfr(
+  arma_choices_27,
+  function(Country, p, q, AICc, lb_p){
+    forecast_country_arma(df_seas, Country, p, q, h_27)
+  }
+)
+readr::write_csv(fc_27, "outputs/forecast_arma_seasonal_to_2027Q4.csv")
+print(dplyr::slice_head(fc_27, n = 10))
+
+# 3) Graphiques
+invisible(lapply(arma_choices_27$Country, function(ctry)
+  plot_fc_country(ctry, fc_27, df_seas, arma_choices_27, "2027-Q4")
+))
+
+### rapport synetique de forcast ARMA de tous les pays 
+# --- 1) Définir la liste des pays cibles ---
+countries <- c("France","Italy","Poland","Germany","Netherlands","Spain")
+
+# Vérifier présence dans la base
+missing <- setdiff(countries, unique(df_seas$Country))
+if (length(missing)) warning("Ces pays manquent dans df_seas : ", paste(missing, collapse = ", "))
+# --- 2) (Re)calcul ACF/PACF & ordres suggérés pour ces pays ---
+orders_seas <- suggest_pq_by_country(
+  data      = df_seas,
+  countries = countries,
+  value_col = "gdp_growth_seas",
+  lag.max   = 12
+)
+readr::write_csv(orders_seas, "outputs/orders_pq_suggested_seasonal_selected_countries.csv")
+print(orders_seas, n = Inf)
+
+# (Option) Plots ACF/PACF sauvegardés
+invisible(lapply(countries, function(ctry)
+  plot_acf_pacf(df_seas, country = ctry, value_col = "gdp_growth_seas", lag.max = 12)
+))
+# --- 3) Prévisions jusqu’à 2026-Q4 pour ces pays ---
+last_q <- max(df_seas$Quarter, na.rm = TRUE)
+h_26   <- h_to(last_q, "2026-Q4")
+
+arma_choices_26 <- orders_seas %>%
+  mutate(sel = purrr::map2(Country, row_number(),
+                           ~ select_arma(
+                             x  = df_seas %>% dplyr::filter(Country == ..1) %>% dplyr::pull(gdp_growth_seas),
+                             p0 = p_suggest[..2], q0 = q_suggest[..2], around = 1))) %>%
+  mutate(best = purrr::map(sel, "best")) %>%
+  tidyr::unnest(best) %>%
+  dplyr::select(Country, p, q, AICc, lb_p)
+
+readr::write_csv(arma_choices_26, "outputs/arma_choices_seasonal_to_2026Q4_selected.csv")
+print(arma_choices_26, n = Inf)
+
+fc_26 <- purrr::pmap_dfr(
+  arma_choices_26,
+  function(Country, p, q, AICc, lb_p){
+    forecast_country_arma(df_seas, Country, p, q, h_26)
+  }
+)
+readr::write_csv(fc_26, "outputs/forecast_arma_seasonal_to_2026Q4_selected.csv")
+
+invisible(lapply(arma_choices_26$Country, function(ctry)
+  plot_fc_country(ctry, fc_26, df_seas, arma_choices_26, "2026-Q4")
+))
+# --- 4) Prévisions jusqu’à 2027-Q4 pour ces pays ---
+h_27 <- h_to(last_q, "2027-Q4")
+
+arma_choices_27 <- orders_seas %>%
+  mutate(sel = purrr::map2(Country, row_number(),
+                           ~ select_arma(
+                             x  = df_seas %>% dplyr::filter(Country == ..1) %>% dplyr::pull(gdp_growth_seas),
+                             p0 = p_suggest[..2], q0 = q_suggest[..2], around = 1))) %>%
+  mutate(best = purrr::map(sel, "best")) %>%
+  tidyr::unnest(best) %>%
+  dplyr::select(Country, p, q, AICc, lb_p)
+
+readr::write_csv(arma_choices_27, "outputs/arma_choices_seasonal_to_2027Q4_selected.csv")
+print(arma_choices_27, n = Inf)
+
+fc_27 <- purrr::pmap_dfr(
+  arma_choices_27,
+  function(Country, p, q, AICc, lb_p){
+    forecast_country_arma(df_seas, Country, p, q, h_27)
+  }
+)
+readr::write_csv(fc_27, "outputs/forecast_arma_seasonal_to_2027Q4_selected.csv")
+
+invisible(lapply(arma_choices_27$Country, function(ctry)
+  plot_fc_country(ctry, fc_27, df_seas, arma_choices_27, "2027-Q4")
+))
+# --- 5) Mettre à jour les tableaux de synthèse (section 12) pour ces pays ---
+summary_fc <- function(tbl, horizon_label){
+  tbl %>%
+    dplyr::filter(Country %in% countries) %>%
+    dplyr::group_by(Country) %>%
+    dplyr::summarise(
+      mean_forecast = mean(mean, na.rm = TRUE),
+      min_forecast  = min(mean, na.rm = TRUE),
+      max_forecast  = max(mean, na.rm = TRUE),
+      lower95_min   = min(lower95, na.rm = TRUE),
+      upper95_max   = max(upper95, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    dplyr::mutate(Period = horizon_label)
+}
+
+sum_26 <- summary_fc(fc_26, "2026-Q4")
+sum_27 <- summary_fc(fc_27, "2027-Q4")
+summary_all <- dplyr::bind_rows(sum_26, sum_27) %>% dplyr::arrange(Country, Period)
+
+evol <- summary_all %>%
+  tidyr::pivot_wider(names_from = Period, values_from = mean_forecast) %>%
+  dplyr::mutate(
+    change_2027_vs_2026 = `2027-Q4` - `2026-Q4`,
+    trend = dplyr::case_when(
+      change_2027_vs_2026 > 0 ~ "Growth",
+      change_2027_vs_2026 < 0 ~ "Slowdown",
+      TRUE ~ "Stable"
+    )
+  )
+
+readr::write_csv(summary_all, "outputs/forecast_summary_all_selected.csv")
+readr::write_csv(evol,        "outputs/forecast_summary_evolution_selected.csv")
+print(summary_all, n = Inf); print(evol, n = Inf)
+
+
