@@ -19,7 +19,7 @@ head(data_countries_euro)
 
 
 ##---------------------------------------------------------------------
-## Organizing the data, fist arrange the form and then havind the gdp growth
+## Organizing the data, column
 ##---------------------------------------------------------------------
 
 data_countries_euro_prepared <- data_countries_euro %>%
@@ -35,16 +35,20 @@ data_countries_euro_prepared <- data_countries_euro %>%
 data_countries_euro_prepared <- data_countries_euro_prepared %>%
   mutate(Quarter = as.yearqtr(Quarter, format = "%Y-Q%q"))
 
+##---------------------------------------------------------------------
+## Computing the log-diff to have the GDP growth
+##---------------------------------------------------------------------
 
-#Have it into gdp growth
-
-data_countries_euro_Growth_GDP_unseasonnalized <- data_countries_euro_prepared 
-
-data_countries_euro_Growth_GDP_unseasonnalized <- data_countries_euro_Growth_GDP_unseasonnalized %>%
+Euro_Countries_GDP_Growth_Log <- data_countries_euro_prepared %>%
+  arrange(Country, Quarter) %>%
   group_by(Country) %>%
-  arrange(Quarter) %>%
-  mutate(gdp_growth = (Nominal_GDP / lag(Nominal_GDP) - 1) * 100)
+  # Safely take logs: NA if GDP <= 0
+  mutate(
+    log_gdp = ifelse(Nominal_GDP > 0, log(Nominal_GDP), NA_real_),
+    # Quarter-over-Quarter log growth (≈ % change): 100 * Δlog
+    gdp_growth_qoq_log = 100 * (log_gdp - lag(log_gdp)),
 
-data_countries_euro_Growth_GDP_unseasonnalized <- data_countries_euro_Growth_GDP_unseasonnalized %>%
-  arrange(Country, Quarter)
+  ) %>%
+  ungroup()
+
 
