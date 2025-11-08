@@ -26,7 +26,8 @@ library(writexl)
 
 
 
-
+  Euro_Countries_GDP_Growth_Log <- read_excel("data.xlsx") %>%
+    filter(Country != "Poland")   # <-- remove Poland here
 
 
 ## ======================================================================
@@ -74,8 +75,6 @@ library(writexl)
         c(rep(NA, length(gdp_growth_qoq_log) - length(adj)), as.numeric(adj))
       }
     )
-
-
 
 
 
