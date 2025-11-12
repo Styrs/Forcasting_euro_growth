@@ -14,7 +14,7 @@ library(writexl)
 
 
 ##---------------------------------------------------------------------
-## We import the data
+## 1. We import the data
 ##---------------------------------------------------------------------
   
   url_euro_bigcountries <- "https://github.com/Styrs/Forcasting_euro_growth/raw/refs/heads/main/Countries_Excel_euro_GDP.xlsx"
@@ -26,11 +26,11 @@ library(writexl)
   data_countries_Smalleuro <- read_excel("data.xlsx")
 
 ##---------------------------------------------------------------------
-## Organizing the data, column
+## 2. Organizing the data, column
 ##---------------------------------------------------------------------
 
 
-##############Transformation for big countries raw data ####################################
+############## 2.1 Transformation for big countries raw data ####################################
   data_countries_euro_prepared <- data_countries_bigeuro %>%
     rename(Country = TIME) %>%            # rename first column
     pivot_longer(
@@ -48,7 +48,7 @@ library(writexl)
 
 
 
-##############Transformation for small countries raw data ####################################
+############## 2.2 Transformation for small countries raw data ####################################
 
   data_smalleuro_prepared <- data_countries_Smalleuro %>%
     # Remove the unwanted period first
@@ -79,7 +79,7 @@ library(writexl)
   
   
 
-######### Combine big + small countries ##################################################################
+######### 2.3 Combine big + small countries ##################################################################
 
   data_Allcountries_euro_prepared <- bind_rows(
     data_countries_euro_prepared,
@@ -88,7 +88,7 @@ library(writexl)
     arrange(Country, Quarter)
 
 
-##############Creation of the observed aggregated eurozone nominal GDP (sum of nationnal GDP) ####################################
+############## 2.4 Creation of the observed aggregated eurozone nominal GDP (sum of nationnal GDP) ####################################
 
   
   Eurozone_agregated_GDPgrowth <- data_Allcountries_euro_prepared %>%
@@ -101,10 +101,10 @@ library(writexl)
 
 
 ##---------------------------------------------------------------------
-## Computing the log-diff to have the GDP growth
+## 3. Computing the log-diff to have the GDP growth
 ##---------------------------------------------------------------------
   
-###################LogGDP for euro coutries#####################################
+################### 3.1 LogGDP for euro countries#####################################
   
   Euro_Countries_GDP_Growth_Log <- data_Allcountries_euro_prepared %>%
     arrange(Country, Quarter) %>%
@@ -118,7 +118,7 @@ library(writexl)
     ) %>%
     ungroup()
   
-##################LogGDP for aggregates Eurozone################################  
+################## 3.2 LogGDP for aggregates Eurozone################################  
 
   Eurozone_agregated_GDPgrowth <- Eurozone_agregated_GDPgrowth %>%
     arrange(Quarter) %>%
@@ -130,6 +130,18 @@ library(writexl)
   
   
   
+  
+  
+  
+  
+  
+  
+  write_xlsx(Eurozone_agregated_GDPgrowth, "Eurozone_agregated_GDPgrowth.xlsx")
+  
+
+write_xlsx(Euro_Countries_GDP_Growth_Log, "Euro_Countries_GDP_Growth_Log.xlsx")
+
+
 
 
 
