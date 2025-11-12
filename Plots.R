@@ -96,12 +96,15 @@ ggplot(Eurozone_GDPgrowth_seas,
   geom_line(linewidth = 0.9, alpha = 0.9) +
   geom_hline(yintercept = 0, linetype = "dashed") +
   labs(
-    title = "Quarterly GDP Growth for Eurozone",
+    title = "Quarterly seas GDP Growth for Eurozone",
     x = "Quarter",
     y = "GDP growth (%)"
   ) +
   theme_minimal(base_size = 12) +
   theme(legend.position = "bottom")
+
+
+
 
 
 
