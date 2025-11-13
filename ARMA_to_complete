@@ -1,0 +1,135 @@
+# ----------------------------------------------------------------------------
+### PARAMÈTRES À MODIFIER
+# ----------------------------------------------------------------------------
+pays_choisi <- "France"
+premiere_periode <- 2000.00
+derniere_periode <- 2009.75
+# ----------------------------------------------------------------------------
+
+# Fonction générique
+forecast_pays <- function(data, country_name, start_date, end_date) {
+  pays_data <- data[data$Country == country_name, ]
+  train_data <- pays_data[pays_data$Quarter >= start_date & pays_data$Quarter <= end_date, ]
+  ts_data <- ts(train_data$seasonal_adjusted, start = c(floor(start_date), (start_date - floor(start_date)) * 4 + 1), frequency = 4)
+  
+  return(list(
+    train_data = train_data,
+    ts_data = ts_data,
+    forecast_horizons = c(2, 4, 6, 8, 10)  # n = 2,4,6,8,10
+  ))
+}
+
+# ----------------------------------------------------------------------------
+### Test AIC
+# ----------------------------------------------------------------------------
+
+# 1. Préparer les données avec la fonction
+result <- forecast_pays(data_clean, pays_choisi, premiere_periode, derniere_periode)
+
+# 2. Test AIC avec auto.arima
+library(forecast)
+fit <- auto.arima(result$ts_data,
+                  seasonal = FALSE,
+                  ic = "aic",
+                  stepwise = FALSE,
+                  approximation = FALSE)
+
+# 3. Résultats - trouver le bon ARMA
+best_order <- arimaorder(fit)
+best_aic <- AIC(fit)
+
+print(paste("Meilleur ARMA pour", pays_choisi, ": (", best_order["p"], ",", best_order["q"], ")", sep = ""))
+print(paste("AIC :", best_aic))
+
+# ----------------------------------------------------------------------------
+### Forecast avec le meilleur modèle ARMA
+# ----------------------------------------------------------------------------
+
+# 1. Utiliser l'ordre ARMA optimal trouvé par AIC
+model_optimal <- Arima(result$ts_data, order = c(best_order["p"], 0, best_order["q"]))
+
+# 2. Faire le forecast pour les 5 horizons
+forecast_optimal <- forecast(model_optimal, h = 10)
+
+# 3. Extraire les forecasts pour n = 2,4,6,8,10
+forecast_values <- forecast_optimal$mean[result$forecast_horizons]
+
+# 4. Afficher les résultats
+print(paste("Modèle utilisé pour", pays_choisi, ": ARMA(", best_order["p"], ",", best_order["q"], ")", sep = ""))
+for (i in 1:length(result$forecast_horizons)) {
+  horizon <- result$forecast_horizons[i]
+  start_year <- floor(premiere_periode)
+  total_quarters <- (derniere_periode - premiere_periode) * 4
+  year <- start_year + floor((total_quarters + horizon) / 4)
+  quarter <- ((total_quarters + horizon) %% 4)
+  if (quarter == 0) quarter <- 4
+  print(paste("Forecast ", year, "-Q", quarter, " : ", round(forecast_values[i], 4), sep = ""))
+}
+
+# 5. Optionnel : Visualiser
+plot(forecast_optimal, main = paste("Forecast ARMA(", best_order["p"], ",", best_order["q"], ") - ", pays_choisi, sep = ""))
+
+# ----------------------------------------------------------------------------
+### Comparaison avec les vraies valeurs
+# ----------------------------------------------------------------------------
+
+# 1. Récupérer les vraies valeurs pour les 5 périodes
+true_values <- numeric(5)
+for (i in 1:5) {
+  horizon <- result$forecast_horizons[i]
+  start_year <- floor(premiere_periode)
+  total_quarters <- (derniere_periode - premiere_periode) * 4
+  year <- start_year + floor((total_quarters + horizon) / 4)
+  quarter <- ((total_quarters + horizon) %% 4)
+  if (quarter == 0) quarter <- 4
+  quarter_value <- year + (quarter - 1) * 0.25
+  true_values[i] <- data_clean$seasonal_adjusted[data_clean$Country == pays_choisi & data_clean$Quarter == quarter_value]
+}
+
+# 2. Calculer les erreurs de prévision
+forecast_errors <- as.numeric(forecast_values) - true_values
+
+# 3. Afficher les comparaisons
+for (i in 1:5) {
+  horizon <- result$forecast_horizons[i]
+  start_year <- floor(premiere_periode)
+  total_quarters <- (derniere_periode - premiere_periode) * 4
+  year <- start_year + floor((total_quarters + horizon) / 4)
+  quarter <- ((total_quarters + horizon) %% 4)
+  if (quarter == 0) quarter <- 4
+  print(paste("Période ", year, "-Q", quarter, ":", sep = ""))
+  print(paste("  Forecast :", round(forecast_values[i], 4)))
+  print(paste("  Vraie valeur :", round(true_values[i], 4)))
+  print(paste("  Erreur :", round(forecast_errors[i], 4)))
+  print(paste("  Erreur relative :", round(forecast_errors[i]/true_values[i] * 100, 2), "%"))
+  print("---")
+}
+
+# 4. Résumé complet
+results <- data.frame(
+  Date = sapply(1:5, function(i) {
+    horizon <- result$forecast_horizons[i]
+    start_year <- floor(premiere_periode)
+    total_quarters <- (derniere_periode - premiere_periode) * 4
+    year <- start_year + floor((total_quarters + horizon) / 4)
+    quarter <- ((total_quarters + horizon) %% 4)
+    if (quarter == 0) quarter <- 4
+    paste(year, "-Q", quarter, sep = "")
+  }),
+  Forecast = as.numeric(forecast_values),
+  Actual = true_values,
+  Error = forecast_errors,
+  ARMA_Order = paste("ARMA(", best_order["p"], ",", best_order["q"], ")", sep = ""),
+  AIC = AIC(model_optimal)
+)
+
+print(results)
+
+# 5. Moyenne des erreurs sur les 5 périodes
+mean_error <- mean(forecast_errors)
+mean_abs_error <- mean(abs(forecast_errors))
+mean_rel_error <- mean(abs(forecast_errors / true_values)) * 100
+
+print(paste("Moyenne des erreurs sur les 5 périodes :", round(mean_error, 4)))
+print(paste("Moyenne des erreurs absolues :", round(mean_abs_error, 4)))
+print(paste("Moyenne des erreurs relatives :", round(mean_rel_error, 2), "%"))
