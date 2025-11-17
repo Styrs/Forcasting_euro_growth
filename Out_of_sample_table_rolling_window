@@ -1,0 +1,226 @@
+# ----------------------------------------------------------------------------
+### PARAMÈTRES DE LA BOUCLE
+# ----------------------------------------------------------------------------
+pays_liste <- c("France", "Italy", "Germany", "Netherlands", "Spain", "Sum Small euro countries")
+debut_total <- 2000.25
+fin_total <- 2025.00  # Données jusqu'en 2025-Q1
+nb_boucles <- 40     # Nombre de boucles souhaité
+# ----------------------------------------------------------------------------
+
+# Calcul de la première période du tableau
+start_year <- floor(debut_total)
+start_quarter <- (debut_total - start_year) * 4 + 1
+periode_debut <- debut_total + 9.75  # Fin de la première période d'entraînement + premier forecast
+
+# Création de la séquence des périodes pour le tableau final
+periodes_tableau <- character(0)
+current_date <- periode_debut
+for (i in 1:(nb_boucles + 9)) {  # nb_boucles + 9 pour couvrir toutes les périodes
+  year <- floor(current_date)
+  quarter <- ((current_date - year) * 4) + 1
+  periodes_tableau <- c(periodes_tableau, paste0(year, "-Q", quarter))
+  current_date <- current_date + 0.25
+}
+
+# Initialisation du tableau final (structure triangulaire)
+tableau_erreurs_croissance <- matrix(NA, nrow = length(periodes_tableau), ncol = nb_boucles)
+rownames(tableau_erreurs_croissance) <- periodes_tableau
+colnames(tableau_erreurs_croissance) <- paste0("Boucle_", 1:nb_boucles)
+
+# Boucle pour les périodes glissantes (UNE boucle = traitement des 6 pays)
+for (i in 1:nb_boucles) {
+  
+  print(paste("=== BOUCLE GLOBALE", i, "==="))
+  
+  # Calcul des périodes pour cette itération
+  start_date <- debut_total + (i-1) * 0.20  # Décalage de 1 période
+  end_date <- start_date + 9.75  # 10 ans de données
+  
+  # Vérifier qu'on ne dépasse pas 2025-Q1
+  if (end_date + 2.50 > fin_total) {  # end_date + 2.50 pour les 10 forecasts
+    print(paste("Arrêt de la boucle : fin des données atteinte à l'itération", i))
+    break
+  }
+  
+  print(paste("Période d'entraînement :", start_date, "à", end_date))
+  print(paste("Forecasts jusqu'à :", end_date + 2.50))
+  
+  # Initialisation des matrices pour stocker les résultats des 6 pays
+  expected_gdp_all <- matrix(NA, nrow = 11, ncol = length(pays_liste))  # 11 périodes pour calculer croissance
+  nominal_gdp_all <- matrix(NA, nrow = 11, ncol = length(pays_liste))
+  
+  # Traitement de chaque pays pour cette boucle
+  for (pays_index in 1:length(pays_liste)) {
+    pays_choisi <- pays_liste[pays_index]
+    
+    print(paste("--- Traitement du pays :", pays_choisi, "---"))
+    
+    # ----------------------------------------------------------------------------
+    ### PARAMÈTRES À MODIFIER
+    # ----------------------------------------------------------------------------
+    premiere_periode <- start_date
+    derniere_periode <- end_date
+    # ----------------------------------------------------------------------------
+    
+    # Fonction générique
+    forecast_pays <- function(data, country_name, start_date, end_date) {
+      pays_data <- data[data$Country == country_name, ]
+      train_data <- pays_data[pays_data$Quarter >= start_date & pays_data$Quarter <= end_date, ]
+      ts_data <- ts(train_data$seasonal_adjusted, start = c(floor(start_date), (start_date - floor(start_date)) * 4 + 1), frequency = 4)
+      
+      return(list(
+        train_data = train_data,
+        ts_data = ts_data,
+        forecast_horizons = c(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+      ))
+    }
+    
+    # ----------------------------------------------------------------------------
+    ### Test AIC et Forecast
+    # ----------------------------------------------------------------------------
+    
+    # 1. Préparer les données avec la fonction
+    result <- forecast_pays(data_clean, pays_choisi, premiere_periode, derniere_periode)
+    
+    # 2. Test AIC avec sélection manuelle - Minimum AR(1)
+    library(forecast)
+    
+    best_aic <- Inf
+    best_model <- NULL
+    
+    for (p in 0:5) {  # ← CHANGER 1:5 en 0:5 pour inclure p=0
+      for (q in 0:5) {
+        if (p == 0 && q == 0) next  # Sauter ARMA(0,0) qui n'est pas valide
+        tryCatch({
+          model <- Arima(result$ts_data, order = c(p, 0, q))
+          if (AIC(model) < best_aic) {
+            best_aic <- AIC(model)
+            best_model <- model
+          }
+        }, error = function(e) {})
+      }
+    }
+    
+    fit <- best_model
+    best_order <- arimaorder(fit)
+    
+    # 3. Forecast avec le meilleur modèle ARMA
+    model_optimal <- Arima(result$ts_data, order = c(best_order["p"], 0, best_order["q"]))
+    forecast_optimal <- forecast(model_optimal, h = 10)
+    forecast_values <- forecast_optimal$mean[result$forecast_horizons]
+    
+    print(paste("Modèle utilisé pour", pays_choisi, ": ARMA(", best_order["p"], ",", best_order["q"], ")", sep = ""))
+    
+    # ----------------------------------------------------------------------------
+    ### Calcul des Expected_GDP pour ce pays
+    # ----------------------------------------------------------------------------
+    
+    # D'abord, récupérer le Nominal_GDP initial (t-1 pour la première période)
+    start_year_train <- floor(premiere_periode)
+    total_quarters <- (derniere_periode - premiere_periode) * 4
+    
+    # Période initiale (t-1 pour le premier forecast)
+    year_initial <- start_year_train + floor(total_quarters / 4)
+    quarter_initial <- (total_quarters %% 4) + 1
+    quarter_value_initial <- year_initial + (quarter_initial - 1) * 0.25
+    
+    nominal_gdp_initial <- data_clean$Nominal_GDP[data_clean$Country == pays_choisi & data_clean$Quarter == quarter_value_initial]
+    
+    if (length(nominal_gdp_initial) > 0 && !is.na(nominal_gdp_initial)) {
+      expected_gdp_all[1, pays_index] <- nominal_gdp_initial
+      nominal_gdp_all[1, pays_index] <- nominal_gdp_initial
+    }
+    
+    # Calcul des Expected_GDP pour les 10 périodes de forecast
+    for (j in 1:10) {
+      horizon <- result$forecast_horizons[j]
+      year <- start_year_train + floor((total_quarters + horizon) / 4)
+      quarter <- ((horizon - 1) %% 4) + 1
+      quarter_value <- year + (quarter - 1) * 0.25
+      
+      # Utiliser l'Expected_GDP de la période précédente
+      if (!is.na(expected_gdp_all[j, pays_index])) {
+        growth_forecast <- forecast_values[j] / 100  # Supposant que le forecast est en %
+        expected_gdp <- expected_gdp_all[j, pays_index] * (1 + growth_forecast)
+        expected_gdp_all[j + 1, pays_index] <- expected_gdp
+        
+        # Récupérer le Nominal_GDP réel de la période courante
+        nominal_gdp_current <- data_clean$Nominal_GDP[data_clean$Country == pays_choisi & data_clean$Quarter == quarter_value]
+        if (length(nominal_gdp_current) > 0 && !is.na(nominal_gdp_current)) {
+          nominal_gdp_all[j + 1, pays_index] <- nominal_gdp_current
+        }
+      }
+    }
+  }
+  
+  # ----------------------------------------------------------------------------
+  ### Calcul de la croissance globale et des erreurs
+  # ----------------------------------------------------------------------------
+  
+  # Calcul des agrégats globaux
+  expected_gdp_global <- apply(expected_gdp_all, 1, sum, na.rm = TRUE)
+  nominal_gdp_global <- apply(nominal_gdp_all, 1, sum, na.rm = TRUE)
+  
+  # Calcul de la croissance expected globale
+  expected_growth_global <- numeric(10)
+  for (periode in 1:10) {
+    if (expected_gdp_global[periode] > 0 && expected_gdp_global[periode + 1] > 0) {
+      expected_growth_global[periode] <- (expected_gdp_global[periode + 1] - expected_gdp_global[periode]) / expected_gdp_global[periode] * 100
+    }
+  }
+  
+  # Récupération de la croissance réelle globale (seasonal_adjusted)
+  seasonal_adjusted_global <- numeric(10)
+  for (periode in 1:10) {
+    horizon <- periode
+    year <- start_year_train + floor((total_quarters + horizon) / 4)
+    quarter <- ((horizon - 1) %% 4) + 1
+    quarter_value <- year + (quarter - 1) * 0.25
+    
+    # Somme des seasonal_adjusted pour tous les pays
+    sa_sum <- 0
+    count <- 0
+    for (pays in pays_liste) {
+      sa_value <- data_clean$seasonal_adjusted[data_clean$Country == pays & data_clean$Quarter == quarter_value]
+      if (length(sa_value) > 0 && !is.na(sa_value)) {
+        sa_sum <- sa_sum + sa_value
+        count <- count + 1
+      }
+    }
+    if (count > 0) {
+      seasonal_adjusted_global[periode] <- sa_sum / count  # Moyenne des croissances
+    }
+  }
+  
+  # Calcul des erreurs de croissance
+  erreurs_croissance <- expected_growth_global - seasonal_adjusted_global
+  
+  # Déterminer la position dans le tableau (structure triangulaire)
+  start_periode_index <- i  # Boucle 1 commence à ligne 1, Boucle 2 à ligne 2, etc.
+  
+  # Remplir le tableau avec les erreurs (10 périodes de forecast)
+  for (j in 1:10) {
+    if ((start_periode_index + j - 1) <= nrow(tableau_erreurs_croissance)) {
+      tableau_erreurs_croissance[start_periode_index + j - 1, i] <- erreurs_croissance[j]
+    }
+  }
+  
+  print(paste("Boucle", i, "terminée - Erreurs ajoutées à partir de la ligne", start_periode_index))
+}
+
+# ----------------------------------------------------------------------------
+### AFFICHAGE DU TABLEAU FINAL
+# ----------------------------------------------------------------------------
+
+print("=== TABLEAU FINAL DES ERREURS DE CROISSANCE GLOBALE ===")
+print(tableau_erreurs_croissance)
+
+# Sauvegarde du tableau
+write.csv(tableau_erreurs_croissance, "tableau_erreurs_croissance_globale_triangulaire.csv")
+
+# Résumé statistique
+print("=== RÉSUMÉ STATISTIQUE ===")
+print(paste("Nombre de boucles complétées :", nb_boucles))
+print(paste("Nombre de périodes couvertes :", nrow(tableau_erreurs_croissance)))
+print(paste("Moyenne des erreurs de croissance :", round(mean(tableau_erreurs_croissance, na.rm = TRUE), 4)))
+print(paste("Écart-type des erreurs de croissance :", round(sd(tableau_erreurs_croissance, na.rm = TRUE), 4)))
