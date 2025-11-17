@@ -74,10 +74,10 @@ for (i in 1:nb_boucles) {
   # 1. Utiliser l'ordre ARMA optimal trouvé par AIC
   model_optimal <- Arima(result$ts_data, order = c(best_order["p"], 0, best_order["q"]))
   
-  # 2. Faire le forecast pour les 5 horizons
+  # 2. Faire le forecast pour les 10 horizons
   forecast_optimal <- forecast(model_optimal, h = 10)
   
-  # 3. Extraire les forecasts pour n = 1,2,3,4,5,6,7,8,9,10
+  # 3. Extraire les forecasts pour n = 2,4,6,8,10
   forecast_values <- forecast_optimal$mean[result$forecast_horizons]
   
   # 4. Afficher les résultats
@@ -99,9 +99,9 @@ for (i in 1:nb_boucles) {
   ### Comparaison avec les vraies valeurs
   # ----------------------------------------------------------------------------
   
-  # 1. Récupérer les vraies valeurs pour les 10 périodes
-  true_values <- numeric(5)
-  for (i in 1:5) {
+  # 1. Récupérer les vraies valeurs pour les 5 périodes
+  true_values <- numeric(10)
+  for (i in 1:10) {
     horizon <- result$forecast_horizons[i]
     start_year <- floor(premiere_periode)
     total_quarters <- (derniere_periode - premiere_periode) * 4
@@ -116,7 +116,7 @@ for (i in 1:nb_boucles) {
   forecast_errors <- as.numeric(forecast_values) - true_values
   
   # 3. Afficher les comparaisons
-  for (i in 1:5) {
+  for (i in 1:10) {
     horizon <- result$forecast_horizons[i]
     start_year <- floor(premiere_periode)
     total_quarters <- (derniere_periode - premiere_periode) * 4
@@ -133,7 +133,7 @@ for (i in 1:nb_boucles) {
   
   # 4. Résumé complet
   results <- data.frame(
-    Date = sapply(1:5, function(i) {
+    Date = sapply(1:10, function(i) {
       horizon <- result$forecast_horizons[i]
       start_year <- floor(premiere_periode)
       total_quarters <- (derniere_periode - premiere_periode) * 4
@@ -151,7 +151,7 @@ for (i in 1:nb_boucles) {
   
   print(results)
   
-  # 5. Moyenne des erreurs sur les 10 périodes
+  # 5. Moyenne des erreurs sur les 5 périodes
   mean_error <- mean(forecast_errors)
   mean_abs_error <- mean(abs(forecast_errors))
   mean_rel_error <- mean(abs(forecast_errors / true_values)) * 100
@@ -161,4 +161,3 @@ for (i in 1:nb_boucles) {
   print(paste("Moyenne des erreurs relatives :", round(mean_rel_error, 2), "%"))
   
 }
-
