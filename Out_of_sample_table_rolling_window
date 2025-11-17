@@ -66,7 +66,7 @@ for (i in 1:nb_boucles) {
     forecast_pays <- function(data, country_name, start_date, end_date) {
       pays_data <- data[data$Country == country_name, ]
       train_data <- pays_data[pays_data$Quarter >= start_date & pays_data$Quarter <= end_date, ]
-      ts_data <- ts(train_data$seasonal_adjusted, start = c(floor(start_date), (start_date - floor(start_date)) * 4 + 1), frequency = 4)
+      ts_data <- ts(train_data$seasonal_adjusted_wins, start = c(floor(start_date), (start_date - floor(start_date)) * 4 + 1), frequency = 4)
       
       return(list(
         train_data = train_data,
@@ -169,7 +169,7 @@ for (i in 1:nb_boucles) {
     }
   }
   
-  # Récupération de la croissance réelle globale (seasonal_adjusted)
+  # Récupération de la croissance réelle globale (seasonal_adjusted_wins)
   seasonal_adjusted_global <- numeric(10)
   for (periode in 1:10) {
     horizon <- periode
@@ -181,7 +181,7 @@ for (i in 1:nb_boucles) {
     sa_sum <- 0
     count <- 0
     for (pays in pays_liste) {
-      sa_value <- data_clean$seasonal_adjusted[data_clean$Country == pays & data_clean$Quarter == quarter_value]
+      sa_value <- data_clean$seasonal_adjusted_wins[data_clean$Country == pays & data_clean$Quarter == quarter_value]
       if (length(sa_value) > 0 && !is.na(sa_value)) {
         sa_sum <- sa_sum + sa_value
         count <- count + 1
