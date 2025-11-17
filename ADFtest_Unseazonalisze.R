@@ -177,10 +177,49 @@ library(writexl)
     time_col = "Quarter"
   )
   
+  
+  ## ======================================================================
+  ## 4. Winsorisation
+  ## ======================================================================
+  
+  
+  
+  
+  
+  
+  ###### 4.1 winsorisation of Eurizone data ######################################################3
+  
+  x <- Eurozone_GDPgrowth_seas$seasonal_adjusted
+  q_low  <- quantile(x, 0.01, na.rm = TRUE)
+  q_high <- quantile(x, 0.99, na.rm = TRUE)
+  
+  Eurozone_GDPgrowth_seas$seasonal_adjusted_wins <-
+    pmin(pmax(x, q_low), q_high)
+  
+  
+  ####### 4.2 winsoristation of countries data ##############################################33
+  
+  data_countries_euro_growth_gdp_seas <-
+    data_countries_euro_growth_gdp_seas %>%
+    group_by(Country) %>%
+    mutate(
+      seasonal_adjusted_wins = {
+        x <- seasonal_adjusted
+        
+        q_low  <- quantile(x, 0.01, na.rm = TRUE)
+        q_high <- quantile(x, 0.99, na.rm = TRUE)
+        
+        pmin(pmax(x, q_low), q_high)
+      }
+    ) %>%
+    ungroup()
+  
+  
+  
+  
+  
+  
   write_xlsx(Eurozone_GDPgrowth_seas, "Eurozone_GDPgrowth_seas.xlsx")
   
   write_xlsx(data_countries_euro_growth_gdp_seas, "data_countries_euro_growth_gdp_seas.xlsx")
   
-
-
-
