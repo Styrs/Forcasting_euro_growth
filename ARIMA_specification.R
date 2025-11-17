@@ -22,7 +22,7 @@ data_countries_euro_growth_gdp_seas <- read_excel("data.xlsx")
 # keep only non-missing growth, and ensure time order within each country
 #Normally the data should be clear before that but we never know, security check 
 data_clean <- data_countries_euro_growth_gdp_seas %>%
-  filter(!is.na(gdp_growth_seas)) %>%
+  filter(!is.na(seasonal_adjusted)) %>%
   arrange(Country, Quarter)
 
 
@@ -36,7 +36,7 @@ data_clean <- data_countries_euro_growth_gdp_seas %>%
 arma_orders_BIC <- data_clean %>%
   group_by(Country) %>%
   summarise({
-    fit <- auto.arima(gdp_growth_seas,
+    fit <- auto.arima(seasonal_adjusted,
                       seasonal = FALSE,
                       ic = "bic",
                       stepwise = FALSE,
@@ -56,7 +56,7 @@ arma_orders_BIC
 arma_orders_AIC <- data_clean %>%
   group_by(Country) %>%
   summarise({
-    fit <- auto.arima(gdp_growth_seas,
+    fit <- auto.arima(seasonal_adjusted,
                       seasonal = FALSE,  # data already seasonally adjusted
                       ic = "aic",        # use AIC criterion this time
                       stepwise = FALSE,
