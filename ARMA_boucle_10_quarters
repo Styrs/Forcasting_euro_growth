@@ -15,7 +15,7 @@ for (i in 1:nb_boucles) {
   end_date <- start_date + 9.75  # 10 ans de données
   
   # Vérifier qu'on ne dépasse pas 2025-Q1
-  if (end_date + 2.50 > fin_total) {  # end_date + 2.50 pour les 5 forecasts
+  if (end_date + 2.50 > fin_total) {  # end_date + 2.50 pour les 10 forecasts
     print(paste("Arrêt de la boucle : fin des données atteinte à l'itération", i))
     break
   }
@@ -77,7 +77,7 @@ for (i in 1:nb_boucles) {
   # 2. Faire le forecast pour les 5 horizons
   forecast_optimal <- forecast(model_optimal, h = 10)
   
-  # 3. Extraire les forecasts pour n = 2,4,6,8,10
+  # 3. Extraire les forecasts pour n = 1,2,3,4,5,6,7,8,9,10
   forecast_values <- forecast_optimal$mean[result$forecast_horizons]
   
   # 4. Afficher les résultats
@@ -99,7 +99,7 @@ for (i in 1:nb_boucles) {
   ### Comparaison avec les vraies valeurs
   # ----------------------------------------------------------------------------
   
-  # 1. Récupérer les vraies valeurs pour les 5 périodes
+  # 1. Récupérer les vraies valeurs pour les 10 périodes
   true_values <- numeric(5)
   for (i in 1:5) {
     horizon <- result$forecast_horizons[i]
