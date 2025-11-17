@@ -52,13 +52,26 @@ for (i in 1:nb_boucles) {
   # 1. Préparer les données avec la fonction
   result <- forecast_pays(data_clean, pays_choisi, premiere_periode, derniere_periode)
   
-  # 2. Test AIC avec auto.arima
+  # 2. Test AIC avec sélection manuelle - Minimum AR(1)
   library(forecast)
-  fit <- auto.arima(result$ts_data,
-                    seasonal = FALSE,
-                    ic = "aic",
-                    stepwise = FALSE,
-                    approximation = FALSE)
+  
+  # Tester uniquement les modèles avec p >= 1
+  best_aic <- Inf
+  best_model <- NULL
+  
+  for (p in 1:5) {  # p de 1 à 5
+    for (q in 0:5) { # q de 0 à 5
+      tryCatch({
+        model <- Arima(result$ts_data, order = c(p, 0, q))
+        if (AIC(model) < best_aic) {
+          best_aic <- AIC(model)
+          best_model <- model
+        }
+      }, error = function(e) {})
+    }
+  }
+  
+  fit <- best_model
   
   # 3. Résultats - trouver le bon ARMA
   best_order <- arimaorder(fit)
