@@ -55,24 +55,24 @@ for (i in 1:nb_boucles) {
   # 2. Test AIC avec sélection manuelle - Minimum AR(1)
   library(forecast)
   
-  # Tester uniquement les modèles avec p >= 1
-  best_aic <- Inf
-  best_model <- NULL
-  
-  for (p in 1:5) {  # p de 1 à 5
-    for (q in 0:5) { # q de 0 à 5
-      tryCatch({
-        model <- Arima(result$ts_data, order = c(p, 0, q))
-        if (AIC(model) < best_aic) {
-          best_aic <- AIC(model)
-          best_model <- model
-        }
-      }, error = function(e) {})
-    }
+# Tester les modèles avec p >= 0 (inclut MA models) mais exclure ARMA(0,0)
+best_aic <- Inf
+best_model <- NULL
+
+for (p in 0:5) {  # ← CHANGÉ: p de 0 à 5 (inclut p=0 pour MA models)
+  for (q in 0:5) { # q de 0 à 5
+    if (p == 0 && q == 0) next  # ← AJOUTÉ: sauter ARMA(0,0) qui n'est pas valide
+    tryCatch({
+      model <- Arima(result$ts_data, order = c(p, 0, q))
+      if (AIC(model) < best_aic) {
+        best_aic <- AIC(model)
+        best_model <- model
+      }
+    }, error = function(e) {})
   }
-  
-  fit <- best_model
-  
+}
+
+fit <- best_model  
   # 3. Résultats - trouver le bon ARMA
   best_order <- arimaorder(fit)
   best_aic <- AIC(fit)
