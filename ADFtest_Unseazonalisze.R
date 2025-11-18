@@ -24,8 +24,7 @@ library(writexl)
   
   Euro_Countries_GDP_Growth_Log <- read_excel("data.xlsx")
 
-  Euro_Countries_GDP_Growth_Log <- read_excel("data.xlsx") %>%
-    filter(Country != "Poland")   # <-- remove Poland here
+  
   
   
   
