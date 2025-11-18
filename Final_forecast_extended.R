@@ -4,7 +4,9 @@ library(forecast)
 library(readxl)
 library(dplyr)
 library(tidyr)
-
+library(ggplot2)
+library(tidyverse)
+library(zoo)    
 
 
 
@@ -333,3 +335,62 @@ Eurozone_GDPgrowth_seas <- read_excel("data.xlsx")
       names_from = Forecast_Date,
       values_from = Eurozone_Nominal_GDP
     )
+  
+  
+  
+  
+  
+  
+###################################################################################
+#Plots
+###################################################################################
+  
+  
+  
+  #------------Prepare the data-------------------
+  
+  hist <- Eurozone_GDPgrowth_seas %>%
+    select(Quarter, seasonal_adjusted_wins) %>%
+    mutate(Date = as.yearqtr(Quarter))
+  
+  forecast <- Forecasted_eurozone_growth %>%
+    pivot_longer(
+      cols = -Region,
+      names_to = "Quarter",
+      values_to = "Forecast"
+    ) %>%
+    mutate(Date = as.yearqtr(Quarter, format = "%Y-Q%q"))
+  
+  # Keep only from 2015 onwards
+  hist_recent     <- hist     %>% filter(Date >= as.yearqtr("2015 Q1"))
+  forecast_recent <- forecast %>% filter(Date >= as.yearqtr("2015 Q1"))
+  
+  # Start of forecast (for the red vertical line)
+  start_forecast_date <- min(forecast_recent$Date)
+  
+  
+  #------------The growth plot-------------------
+  
+  ggplot() +
+    geom_line(data = hist_recent,
+              aes(x = Date, y = seasonal_adjusted_wins,
+                  color = "Past GDP Growth"),
+              size = 1) +
+    geom_line(data = forecast_recent,
+              aes(x = Date, y = Forecast/100,
+                  color = "Forecasted GDP Growth"),
+              size = 1) +
+    # red line at the start of the forecast
+    geom_vline(xintercept = start_forecast_date,
+               color = "red", linetype = "dashed") +
+    scale_color_manual(values = c("Past GDP Growth" = "blue",
+                                  "Forecasted GDP Growth" = "red")) +
+    labs(
+      title = "Eurozone GDP Growth (Actual vs Forecast)",
+      x = "Quarter",
+      y = "GDP Growth (QoQ, %)",
+      color = ""
+    ) +
+    theme_minimal(base_size = 12)
+  
+  
