@@ -21,6 +21,10 @@ library(writexl)
   download.file(url_euro_bigcountries, destfile = "data.xlsx", mode = "wb")
   data_countries_bigeuro <- read_excel("data.xlsx")
   
+  # Remove Poland
+  data_countries_bigeuro <- data_countries_bigeuro %>%
+    filter(TIME != "Poland")
+  
   url_euro_smallcountries <-"https://github.com/Styrs/Forcasting_euro_growth/raw/refs/heads/main/Data_GDP_SmallEuroCountries.xlsx"
   download.file(url_euro_smallcountries, destfile = "data.xlsx", mode = "wb")
   data_countries_Smalleuro <- read_excel("data.xlsx")
@@ -129,9 +133,7 @@ library(writexl)
   Eurozone_agregated_GDPgrowth
   
   
-  
-  
-  
+
   
   
   
@@ -140,9 +142,3 @@ library(writexl)
   
 
 write_xlsx(Euro_Countries_GDP_Growth_Log, "Euro_Countries_GDP_Growth_Log.xlsx")
-
-
-
-
-
-
