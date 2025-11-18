@@ -16,7 +16,7 @@ library(readxl)
   initial_end_quarter <- 2010.00 #the end date of the training set
 
   last_end_quarter <- 2022.75   # This is the last in-sample date you want to reach with the expanding window
-  max_data_quarter <- 2025.50   
+  max_data_quarter <- 2025.25   
 
   forecast_horizons <- 1:10     # h = 1,...,10
 
@@ -460,3 +460,4 @@ library(readxl)
     # final_error_table now has:
     #   Quarter_Value | Observed_Growth | Error_L1 | Error_L2 | ... (triangular structure)
     
+
