@@ -16,14 +16,14 @@ library(readxl)
   initial_end_quarter <- 2010.00 #the end date of the training set
 
   last_end_quarter <- 2022.75   # This is the last in-sample date you want to reach with the expanding window
-  max_data_quarter <- 2025.00   
+  max_data_quarter <- 2025.50   
 
   forecast_horizons <- 1:10     # h = 1,...,10
 
   
   url_data_countries <- "https://github.com/Styrs/Forcasting_euro_growth/raw/refs/heads/main/data_countries_euro_growth_gdp_seas.xlsx"
   download.file(url_data_countries, destfile = "data.xlsx", mode = "wb")
-  data_clean <- read_excel("data.xlsx")
+  data_countries_euro_growth_gdp_seas <- read_excel("data.xlsx")
   
   url_Eurozone_GDPgrowth_seas <- "https://github.com/Styrs/Forcasting_euro_growth/raw/refs/heads/main/Eurozone_GDPgrowth_seas.xlsx"
   download.file(url_Eurozone_GDPgrowth_seas, destfile = "data.xlsx", mode = "wb")
@@ -107,33 +107,29 @@ library(readxl)
   }
   
   
-# ----------------------------------------------------------------------------
-# CHAPTER 3 – FORECASTING WITH THE SELECTED ARMA MODEL
-# ----------------------------------------------------------------------------
+  # ----------------------------------------------------------------------------
+  # CHAPTER 3 – ARMA FORECASTS (CORRECTED DATES)
+  # ----------------------------------------------------------------------------
   
   forecast_arma_model <- function(model, start_quarter, end_quarter, horizons) {
     
-    # Perform the forecast
+    # 1) Forecast growth with the ARMA model
     fc <- forecast(model, h = max(horizons))
     fc_values <- fc$mean[horizons]
     
-    # Convert horizon steps into year/quarter labels
-    # ------------------------------------------------
-    start_year  <- floor(start_quarter)
-    total_quarters_in_sample <- (end_quarter - start_quarter) * 4
-    
+    # 2) Convert horizons into year-quarter labels based on end_quarter
     date_labels <- sapply(horizons, function(h) {
       
-      # Compute the forecasted year
-      year <- start_year + floor((total_quarters_in_sample + h) / 4)
+      # Quarter value of the target (e.g. 2010.00 + 0.25*1 = 2010.25)
+      q_val <- end_quarter + 0.25 * h
       
-      # Compute the quarter (1 to 4)
-      quarter <- ((h - 1) %% 4) + 1
+      year    <- floor(q_val)
+      q_index <- as.integer((q_val - year) * 4 + 1)  # 1..4
       
-      paste0(year, "-Q", quarter)
+      paste0(year, "-Q", q_index)
     })
     
-    # Return a structured list
+    # 3) Return a structured list
     return(list(
       forecast_values = as.numeric(fc_values),
       forecast_dates  = date_labels,
@@ -141,10 +137,9 @@ library(readxl)
     ))
   }
   
-  
-# ----------------------------------------------------------------------------
-# CHAPTER 4 – FROM GROWTH FORECASTS TO NOMINAL GDP FORECASTS
-# ----------------------------------------------------------------------------
+  # ----------------------------------------------------------------------------
+  # CHAPTER 4 – FROM GROWTH FORECASTS TO NOMINAL GDP FORECASTS 
+  # ----------------------------------------------------------------------------
   
   forecast_nominal_gdp_from_growth <- function(data,
                                                country_name,
@@ -152,69 +147,66 @@ library(readxl)
                                                end_quarter,
                                                horizons,
                                                forecast_growth,
-                                               growth_in_percent = FALSE)
-    {
+                                               growth_in_percent = FALSE) {
     
-      # Basic checks
-      if (length(horizons) != length(forecast_growth)) {
-        stop("horizons and forecast_growth must have the same length.")
-      }
+    # Basic checks
+    if (length(horizons) != length(forecast_growth)) {
+      stop("horizons and forecast_growth must have the same length.")
+    }
+    
+    # 1. Get the last observed nominal GDP at end_quarter
+    idx_last <- data$Country == country_name & data$Quarter == end_quarter
+    if (!any(idx_last)) {
+      stop(paste("No Nominal_GDP found for", country_name,
+                 "at quarter", end_quarter))
+    }
+    last_nominal_gdp <- data$Nominal_GDP[idx_last][1]
+    
+    # 2. Build date labels (year-quarter) and numeric quarter values
+    #    using end_quarter + 0.25 * h
+    n_h <- length(horizons)
+    date_labels     <- character(n_h)
+    quarter_numeric <- numeric(n_h)
+    
+    for (i in seq_along(horizons)) {
+      h <- horizons[i]
       
-      # 1. Get the last observed nominal GDP at end_quarter
-      idx_last <- data$Country == country_name & data$Quarter == end_quarter
-      if (!any(idx_last)) {
-        stop(paste("No Nominal_GDP found for", country_name,
-                   "at quarter", end_quarter))
-      }
-      last_nominal_gdp <- data$Nominal_GDP[idx_last][1]
+      q_val <- end_quarter + 0.25 * h
+      year  <- floor(q_val)
+      q_idx <- as.integer((q_val - year) * 4 + 1)  # 1..4
       
-      # 2. Build date labels (year-quarter) and numeric quarter values
-      start_year  <- floor(start_quarter)
-      total_quarters_in_sample <- (end_quarter - start_quarter) * 4
-      
-      n_h <- length(horizons)
-      date_labels     <- character(n_h)
-      quarter_numeric <- numeric(n_h)
-      
-      for (i in seq_along(horizons)) {
-        h <- horizons[i]
-        
-        year <- start_year + floor((total_quarters_in_sample + h) / 4)
-        quarter <- ((h - 1) %% 4) + 1
-        
-        date_labels[i]     <- paste0(year, "-Q", quarter)
-        quarter_numeric[i] <- year + (quarter - 1) * 0.25
-      }
-      
-      
-      if (growth_in_percent) {
-        growth_factors <- 1 + forecast_growth / 100
-      } else {
-        growth_factors <- 1 + forecast_growth
-      }
-      
-      
-      # 3. Build the nominal GDP forecast path
-      nominal_gdp_forecast <- numeric(n_h)
-      current_gdp <- last_nominal_gdp
-      
-      for (i in seq_along(horizons)) {
-        current_gdp <- current_gdp * growth_factors[i]
-        nominal_gdp_forecast[i] <- current_gdp
-      }
-      
-      # 5. Return a table with growth and nominal GDP forecasts
-      results_table <- data.frame(
-        Date                 = date_labels,
-        Quarter_Value        = quarter_numeric,
-        Horizon              = horizons,
-        Growth_Forecast      = as.numeric(forecast_growth),
-        Growth_Factor        = growth_factors,
-        Nominal_GDP_Last_Obs = last_nominal_gdp,
-        Nominal_GDP_Forecast = nominal_gdp_forecast
-      )
-      
-      return(results_table)
+      date_labels[i]     <- paste0(year, "-Q", q_idx)
+      quarter_numeric[i] <- q_val
+    }
+    
+    # 3. Convert growth forecasts into multiplicative factors
+    if (growth_in_percent) {
+      growth_factors <- 1 + forecast_growth / 100
+    } else {
+      growth_factors <- 1 + forecast_growth
+    }
+    
+    # 4. Build the nominal GDP forecast path
+    nominal_gdp_forecast <- numeric(n_h)
+    current_gdp <- last_nominal_gdp
+    
+    for (i in seq_along(horizons)) {
+      current_gdp <- current_gdp * growth_factors[i]
+      nominal_gdp_forecast[i] <- current_gdp
+    }
+    
+    # 5. Return a table with growth and nominal GDP forecasts
+    results_table <- data.frame(
+      Date                 = date_labels,
+      Quarter_Value        = quarter_numeric,
+      Horizon              = horizons,
+      Growth_Forecast      = as.numeric(forecast_growth),
+      Growth_Factor        = growth_factors,
+      Nominal_GDP_Last_Obs = last_nominal_gdp,
+      Nominal_GDP_Forecast = nominal_gdp_forecast
+    )
+    
+    return(results_table)
   }
   
   
@@ -255,13 +247,12 @@ library(readxl)
           message("Stopping loop for country: reached last allowed estimation or forecast date.")
           break
         }
-        
         message(paste("  Iteration", iteration,
                       "- estimation window:", start_quarter, "to", end_quarter))
         
         # 1) Prepare data for this window (Chapter 1 / prepare_country_ts)
         window_data <- prepare_country_ts(
-          data          = data_clean,
+          data          = data_countries_euro_growth_gdp_seas,
           country_name  = country_name,
           start_quarter = start_quarter,
           end_quarter   = end_quarter
@@ -282,7 +273,7 @@ library(readxl)
         
         # 4) Convert growth forecasts into nominal GDP forecasts (Chapter 5)
         gdp_table <- forecast_nominal_gdp_from_growth(
-          data            = data_clean,
+          data            = data_countries_euro_growth_gdp_seas,
           country_name    = country_name,
           start_quarter   = start_quarter,
           end_quarter     = end_quarter,
