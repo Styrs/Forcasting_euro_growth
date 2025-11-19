@@ -1,5 +1,6 @@
 
 
+
 library(readxl)
 library(dplyr)
 library(tidyr)
@@ -147,29 +148,32 @@ Eurozone_agregated_GDPgrowth <- data_Allcountries_euro_prepared %>%
   arrange(Quarter)
 
 ##---------------------------------------------------------------------
-## 3. Computing the log-diff to have the GDP growth (DÉSAISONNALISÉ)
+## 3. Computing the log-diff to have the GDP growth
 ##---------------------------------------------------------------------
 
-################### 3.1 LogGDP for euro countries (DÉSAISONNALISÉ) #####################################
+################### 3.1 LogGDP for euro countries#####################################
 
 Euro_Countries_GDP_Growth_Log <- data_Allcountries_euro_prepared %>%
   arrange(Country, Quarter) %>%
   group_by(Country) %>%
-  # Utiliser les données désaisonnalisées pour le calcul
+  # Safely take logs: NA if GDP <= 0 (avec données désaisonnalisées)
   mutate(
-    log_gdp_seas = ifelse(Nominal_GDP_seas > 0, log(Nominal_GDP_seas), NA_real_),
-    # Quarter-over-Quarter log growth désaisonnalisée: 100 * Δlog
-    gdp_growth_qoq_log_seas = 100 * (log_gdp_seas - lag(log_gdp_seas))
+    log_gdp = ifelse(Nominal_GDP_seas > 0, log(Nominal_GDP_seas), NA_real_),
+    # Quarter-over-Quarter log growth (≈ % change): 100 * Δlog
+    gdp_growth_qoq_log = 100 * (log_gdp - lag(log_gdp))
   ) %>%
   ungroup()
 
-################## 3.2 LogGDP for aggregates Eurozone (DÉSAISONNALISÉ) ################################  
+################## 3.2 LogGDP for aggregates Eurozone################################  
 
 Eurozone_agregated_GDPgrowth <- Eurozone_agregated_GDPgrowth %>%
   arrange(Quarter) %>%
   mutate(
-    # Utiliser l'agrégat désaisonnalisé pour le calcul de croissance
-    log_GDP_growth_seas = 100 * (log(Eurozone_Nominal_GDP_seas) - log(lag(Eurozone_Nominal_GDP_seas)))
+    log_GDP_growth = log(Eurozone_Nominal_GDP_seas) - log(lag(Eurozone_Nominal_GDP_seas))
   )
 
 Eurozone_agregated_GDPgrowth
+
+write_xlsx(Eurozone_agregated_GDPgrowth, "Eurozone_agregated_GDPgrowth.xlsx")
+
+write_xlsx(Euro_Countries_GDP_Growth_Log, "Euro_Countries_GDP_Growth_Log.xlsx")
