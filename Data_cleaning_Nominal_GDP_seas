@@ -1,0 +1,200 @@
+
+# Installer le package seasonal si pas déjà installé
+if (!require(seasonal)) {
+  install.packages("seasonal")
+  library(seasonal)
+}
+
+library(readxl)
+library(dplyr)
+library(tidyr)
+library(zoo)
+library(writexl)
+
+#######################################################################
+
+##---------------------------------------------------------------------
+## 1. We import the data
+##---------------------------------------------------------------------
+
+url_euro_bigcountries <- "https://github.com/Styrs/Forcasting_euro_growth/raw/refs/heads/main/Countries_Excel_euro_GDP.xlsx"
+download.file(url_euro_bigcountries, destfile = "data.xlsx", mode = "wb")
+data_countries_bigeuro <- read_excel("data.xlsx")
+
+# Remove Poland
+data_countries_bigeuro <- data_countries_bigeuro %>%
+  filter(TIME != "Poland")
+
+url_euro_smallcountries <-"https://github.com/Styrs/Forcasting_euro_growth/raw/refs/heads/main/Data_GDP_SmallEuroCountries.xlsx"
+download.file(url_euro_smallcountries, destfile = "data.xlsx", mode = "wb")
+data_countries_Smalleuro <- read_excel("data.xlsx")
+
+##---------------------------------------------------------------------
+## 2. Organizing the data, column
+##---------------------------------------------------------------------
+
+############## 2.1 Transformation for big countries raw data ####################################
+data_countries_euro_prepared <- data_countries_bigeuro %>%
+  rename(Country = TIME) %>%            # rename first column
+  pivot_longer(
+    cols = -Country,                    # all other columns are quarters
+    names_to = "Quarter",
+    values_to = "Nominal_GDP"
+  )
+
+data_countries_euro_prepared <- data_countries_euro_prepared %>%
+  mutate(Quarter = as.yearqtr(Quarter, format = "%Y-Q%q"))
+
+############## 2.2 Transformation for small countries raw data ####################################
+
+data_smalleuro_prepared <- data_countries_Smalleuro %>%
+  # Remove the unwanted period first
+  filter(TIME_PERIOD != "2025-Q3") %>%
+  
+  rename(
+    Country     = geo,
+    Quarter     = TIME_PERIOD,
+    Nominal_GDP = OBS_VALUE
+  ) %>%
+  # Normalize quarter strings then convert to yearqtr
+  mutate(
+    Quarter = gsub("-", " ", Quarter),          # "2000-Q1" → "2000 Q1"
+    Quarter = as.yearqtr(Quarter, "%Y Q%q")
+  )
+
+data_smalleuro_sum <- data_smalleuro_prepared %>%
+  group_by(Quarter) %>%
+  summarise(
+    Nominal_GDP = sum(Nominal_GDP, na.rm = TRUE)
+  ) %>%
+  mutate(Country = "Sum Small euro countries") %>%  # optional: label this aggregate
+  select(Country, Quarter, Nominal_GDP)
+
+######### 2.3 Combine big + small countries ##################################################################
+
+data_Allcountries_euro_prepared <- bind_rows(
+  data_countries_euro_prepared,
+  data_smalleuro_sum
+) %>%
+  arrange(Country, Quarter)
+
+##---------------------------------------------------------------------
+## 2.5 DÉSAISONNALISATION X-13-ARIMA DES NOMINAL_GDP
+##---------------------------------------------------------------------
+
+# Fonction pour désaisonnaliser une série avec X-13
+deseasonalize_series <- function(nominal_gdp, dates) {
+  # Créer un objet ts
+  start_year <- as.integer(format(min(dates), "%Y"))
+  start_quarter <- as.integer(format(min(dates), "%q"))
+  
+  ts_data <- ts(nominal_gdp, start = c(start_year, start_quarter), frequency = 4)
+  
+  # Appliquer X-13-ARIMA-SEATS
+  tryCatch({
+    seas_result <- seas(ts_data)
+    deseasonalized <- as.numeric(final(seas_result))
+    return(deseasonalized)
+  }, error = function(e) {
+    # En cas d'erreur, retourner les données originales
+    warning("X-13 failed, returning original data")
+    return(nominal_gdp)
+  })
+}
+
+# Appliquer la désaisonnalisation à chaque pays
+data_Allcountries_euro_deseasonalized <- data_Allcountries_euro_prepared %>%
+  group_by(Country) %>%
+  arrange(Country, Quarter) %>%
+  mutate(
+    Nominal_GDP_seas = deseasonalize_series(Nominal_GDP, Quarter)
+  ) %>%
+  ungroup()
+
+# Créer data_clean avec Nominal_GDP_seas à côté de Nominal_GDP
+data_clean <- data_Allcountries_euro_deseasonalized %>%
+  select(Country, Quarter, Nominal_GDP, Nominal_GDP_seas, everything())
+
+##---------------------------------------------------------------------
+## 3. CALCUL DE LA CROISSANCE POUR CHAQUE PÉRIODE ET CHAQUE PAYS
+##---------------------------------------------------------------------
+
+# Calcul de la croissance trimestrielle pour chaque pays
+data_clean <- data_clean %>%
+  arrange(Country, Quarter) %>%
+  group_by(Country) %>%
+  mutate(
+    # Croissance standard à partir des données désaisonnalisées
+    growth_seas = ifelse(!is.na(lag(Nominal_GDP_seas)) & lag(Nominal_GDP_seas) > 0,
+                         100 * (Nominal_GDP_seas / lag(Nominal_GDP_seas) - 1),
+                         NA_real_),
+    
+    # Croissance log-linéaire (comme le premier code)
+    log_gdp_seas = ifelse(Nominal_GDP_seas > 0, log(Nominal_GDP_seas), NA_real_),
+    growth_log_linear = 100 * (log_gdp_seas - lag(log_gdp_seas))
+  ) %>%
+  ungroup()
+
+# Vérifier les premières données
+print("=== PREMIÈRES DONNÉES DE CROISSANCE ===")
+print(data_clean %>% 
+        filter(Country == "France") %>% 
+        select(Country, Quarter, Nominal_GDP_seas, growth_seas, growth_log_linear) %>% 
+        head(10))
+
+############## 3.1 Creation of the observed aggregated eurozone nominal GDP (sum of national GDP) ####################################
+
+# Version désaisonnalisée
+Eurozone_agregated_GDPgrowth_seas <- data_clean %>%
+  group_by(Quarter) %>%
+  summarise(
+    Eurozone_Nominal_GDP = sum(Nominal_GDP, na.rm = TRUE),
+    Eurozone_Nominal_GDP_seas = sum(Nominal_GDP_seas, na.rm = TRUE)
+  ) %>%
+  arrange(Quarter)
+
+# Calcul de la croissance pour la zone euro agrégée
+Eurozone_agregated_GDPgrowth <- Eurozone_agregated_GDPgrowth_seas %>%
+  arrange(Quarter) %>%
+  mutate(
+    # Croissance zone euro standard
+    growth_eurozone_seas = ifelse(!is.na(lag(Eurozone_Nominal_GDP_seas)) & lag(Eurozone_Nominal_GDP_seas) > 0,
+                                  100 * (Eurozone_Nominal_GDP_seas / lag(Eurozone_Nominal_GDP_seas) - 1),
+                                  NA_real_),
+    
+    # Croissance zone euro log-linéaire
+    log_gdp_eurozone_seas = ifelse(Eurozone_Nominal_GDP_seas > 0, log(Eurozone_Nominal_GDP_seas), NA_real_),
+    growth_eurozone_log_linear = 100 * (log_gdp_eurozone_seas - lag(log_gdp_eurozone_seas))
+  )
+
+##---------------------------------------------------------------------
+## 4. SAUVEGARDE DES RÉSULTATS
+##---------------------------------------------------------------------
+
+# Ajouter les données de croissance zone euro à data_clean
+eurozone_growth_data <- Eurozone_agregated_GDPgrowth %>%
+  select(Quarter, growth_eurozone_seas, growth_eurozone_log_linear)
+
+data_clean_complete <- data_clean %>%
+  left_join(eurozone_growth_data, by = "Quarter")
+
+write_xlsx(Eurozone_agregated_GDPgrowth, "Eurozone_agregated_GDPgrowth.xlsx")
+write_xlsx(data_clean_complete, "data_clean_with_growth.xlsx")
+
+print("=== TRAITEMENT TERMINÉ ===")
+print(paste("Pays traités:", length(unique(data_clean$Country))))
+print(paste("Période:", min(data_clean$Quarter), "à", max(data_clean$Quarter)))
+print("Colonnes dans data_clean:")
+print(names(data_clean_complete))
+
+# Comparaison des deux méthodes de croissance
+print("=== COMPARAISON CROISSANCE STANDARD vs LOG-LINÉAIRE ===")
+comparison <- data_clean_complete %>%
+  filter(!is.na(growth_seas) & !is.na(growth_log_linear)) %>%
+  summarise(
+    Avg_Growth_Seas = mean(growth_seas, na.rm = TRUE),
+    Avg_Growth_Log_Linear = mean(growth_log_linear, na.rm = TRUE),
+    Correlation = cor(growth_seas, growth_log_linear, use = "complete.obs")
+  )
+
+print(comparison)
