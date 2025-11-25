@@ -455,9 +455,78 @@ final_error_table_BIC <- merge(
 )
 
 final_error_table_BIC <- final_error_table_BIC[order(final_error_table_BIC$Quarter_Value)
+# final_error_table_BIC now has:
+#   Quarter_Value | Observed_Growth | Error_L1 | Error_L2 | ... (triangular structure)
+
+
+# ----------------------------------------------------------------------------
+# CHAPTER 8 – POINT FORECAST ABSOLUTE EVALUATION (BIC VERSION)
+# ----------------------------------------------------------------------------
+
+# 1) Compute MSFE by horizon -----------------------------------------------
+
+msfe_results_BIC <- aggregate(
+  Forecast_Error ~ Horizon,
+  data = forecast_eval,
+  FUN = function(x) mean(x^2, na.rm = TRUE)
+)
+
+colnames(msfe_results_BIC)[2] <- "MSFE"
+
+message("MSFE by horizon (BIC):")
+print(msfe_results_BIC)
+
+
+
+# 2) Mincer–Zarnowitz regression --------------------------------------------
+
+# y_t = Observed growth
+# f_t = Forecast
+
+mz_data_BIC <- forecast_eval[!is.na(forecast_eval$Observed_Growth), ]
+
+mz_data_BIC$Forecast <- mz_data_BIC$Euro_Nominal_Growth
+mz_data_BIC$Actual   <- mz_data_BIC$Observed_Growth
+
+mincer_model_BIC <- lm(Actual ~ Forecast, data = mz_data_BIC)
+
+message("Mincer–Zarnowitz regression results (BIC):")
+print(summary(mincer_model_BIC))
+
+
+
+# 3) Ljung–Box test on forecast errors --------------------------------------
+
+# Use h=1 errors for autocorrelation test
+errors_h1_BIC <- forecast_eval$Forecast_Error[forecast_eval$Horizon == 1]
+
+lb_test_BIC <- Box.test(errors_h1_BIC, lag = 8, type = "Ljung-Box")
+
+message("Ljung–Box test on forecast errors (h=1, BIC):")
+print(lb_test_BIC)
+
+
+
+# 4) Efficiency regression --------------------------------------------------
+
+# e_t = alpha + beta * z_t + u_t
+# Let z_t = lagged observed growth
+
+eff_data_BIC <- forecast_eval
+eff_data_BIC <- eff_data_BIC[order(eff_data_BIC$Quarter_Value), ]
+
+# Create lag of observed growth
+eff_data_BIC$Lag_Observed <- c(NA, head(eff_data_BIC$Observed_Growth, -1))
+
+# Keep h=1 forecasts (standard in efficiency tests)
+eff_h1_BIC <- eff_data_BIC[eff_data_BIC$Horizon == 1, ]
+eff_h1_BIC <- eff_h1_BIC[!is.na(eff_h1_BIC$Lag_Observed), ]
+
+eff_model_BIC <- lm(Forecast_Error ~ Lag_Observed, data = eff_h1_BIC)
+
+message("Efficiency regression results (errors ~ lagged observed growth, BIC):")
+print(summary(eff_model_BIC))
+
                                                
-                                               # final_error_table now has:
-                                               #   Quarter_Value | Observed_Growth | Error_L1 | Error_L2 | ... (triangular structure)
                                                
-                                               
-                                               
+                                                                                   
