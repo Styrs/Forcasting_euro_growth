@@ -4,6 +4,9 @@ library(forecast)
 library(readxl)
 library(lmtest)
 library(ggplot2)
+library(xtable)
+
+
 
 
 
@@ -77,7 +80,8 @@ for (country_name in countries) {
       data          = Euro_Countries_GDP_Growth_Log,
       country_name  = country_name,
       start_quarter = start_quarter,
-      end_quarter   = end_quarter
+      end_quarter   = end_quarter,
+      gdp_growth_to_train_on = "gdp_growth_log_wins_001"
     )
     
     ts_data <- window_data$ts_data
@@ -209,6 +213,15 @@ lb_results <- ljung_box_by_horizon(error_matrix, K = 8,results_table)
 lb_table <- lb_results$lb_table
 results_table <- lb_results$results_table
 
+
+
+
+
+
+
+results_table <- mean_variance_forecasts(one_country_forecast_matrix,results_table)
+
+
 # ----------------------------------------------------------------------------
 # CHAPTER 5  – Comparison to the benchmark
 # ----------------------------------------------------------------------------
@@ -216,7 +229,7 @@ results_table <- lb_results$results_table
 
 
 
-results_table <- compute_pred_r2(results_table,results_table_bench)
+results_table <- compute_ratio_MSFE(results_table,results_table_bench)
 
 
 results_table <- dm_test_msfe(
@@ -229,8 +242,8 @@ results_table <- dm_test_msfe(
 
 
 
-
-
-
-
+xtable(results_table)
+xtable(error_matrix)
+xtable(MZ_table)
+xtable(lb_table)
 
