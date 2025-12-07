@@ -6,6 +6,8 @@ library(tidyr)
 library(zoo)
 library(seasonal)
 library(writexl)
+library(scales)
+
 
 #######################################################################
 ## 1. We import the data
@@ -22,6 +24,12 @@ data_countries_bigeuro <- data_countries_bigeuro %>%
 url_euro_smallcountries <- "https://github.com/Styrs/Forcasting_euro_growth/raw/refs/heads/main/Data_GDP_SmallEuroCountries.xlsx"
 download.file(url_euro_smallcountries, destfile = "data.xlsx", mode = "wb")
 data_countries_Smalleuro <- read_excel("data.xlsx")
+
+
+url_euro_deflator <- "https://github.com/Styrs/Forcasting_euro_growth/raw/refs/heads/main/2005_linked_deflator.xlsx"
+download.file(url_euro_deflator, destfile = "data.xlsx", mode = "wb")
+delfator_2005_linked <- read_excel("data.xlsx")
+
 
 #######################################################################
 ## 2. Organizing the data, columns
@@ -73,11 +81,53 @@ Euro_Countries_GDP_Growth_Log <- bind_rows(
 ) %>%
   arrange(Country, Quarter)
 
+######### 2.4 Transform the quarters in the right format ##############
+
+
+Euro_Countries_GDP_Growth_Log <- Euro_Countries_GDP_Growth_Log %>%
+  arrange(Country, Quarter) %>%
+  mutate(
+    Quarter = {
+      year    <- as.numeric(format(Quarter, "%Y"))
+      q_index <- as.numeric(format(Quarter, "%q"))
+      year + (q_index - 1) * 0.25
+    }
+  )
+
+######### 2.5 Prepare the deflator table to bo added ####################
+
+delfator_2005_linked <- delfator_2005_linked %>%
+  pivot_longer(
+    cols      = -Country,
+    names_to  = "Quarter",
+    values_to = "deflator_2005_index"
+  ) %>%
+  mutate(
+    Quarter = gsub("-", " ", Quarter),
+    Quarter = as.yearqtr(Quarter, "%Y Q%q"),
+    # convert to decimal format to match Euro_Countries_GDP_Growth_Log
+    Quarter = {
+      year    <- as.numeric(format(Quarter, "%Y"))
+      q_index <- as.numeric(format(Quarter, "%q"))
+      year + (q_index - 1) * 0.25
+    }
+  )
+
+
+
 #######################################################################
 ## 3 DÉSAISONNALISATION DES NOMINAL_GDP AVEC X-13-ARIMA-SEATS
 #######################################################################
 
 
+# désaisonaliser le deflateur
+delfator_2005_linked <- delfator_2005_linked %>%
+  group_by(Country) %>%
+  arrange(Country, Quarter) %>%
+  mutate(
+    deflator_2005_index_seas = deseasonalize_series(deflator_2005_index, Quarter)
+  ) %>%
+  ungroup()
 
 # Appliquer la désaisonnalisation à chaque "pays" (grands + Sum Small)
 Euro_Countries_GDP_Growth_Log <- Euro_Countries_GDP_Growth_Log %>%
@@ -107,6 +157,12 @@ Euro_Countries_GDP_Growth_Log <- Euro_Countries_GDP_Growth_Log %>%
   bind_rows(Eurozone_rows) %>%
   arrange(Country, Quarter)
 
+
+################### Add the deflator to the table #######################
+Euro_Countries_GDP_Growth_Log <- Euro_Countries_GDP_Growth_Log %>%
+  left_join(delfator_2005_linked, by = c("Country", "Quarter"))
+
+
 #######################################################################
 ## 5. Computing the log-diff to have the GDP growth
 #######################################################################
@@ -126,6 +182,21 @@ Euro_Countries_GDP_Growth_Log <- Euro_Countries_GDP_Growth_Log %>%
   ) %>%
   ungroup()
 
+################### 5.2 LogGDP for deflator #####################
+
+
+Euro_Countries_GDP_Growth_Log <- Euro_Countries_GDP_Growth_Log %>%
+  arrange(Country, Quarter) %>%
+  group_by(Country) %>%
+  mutate(
+    # Safely take logs: NA if deflator <= 0
+    deflator_log_seas = ifelse(deflator_2005_index_seas > 0, log(deflator_2005_index_seas), NA_real_),
+    
+    # Quarter-over-Quarter deflator: 100 * Δlog
+    deflator_logdiff = 100 * (deflator_log_seas - lag(deflator_log_seas))
+    
+  ) %>%
+  ungroup()
 
 #######################################################################
 ## 5. winsorizing
@@ -133,7 +204,8 @@ Euro_Countries_GDP_Growth_Log <- Euro_Countries_GDP_Growth_Log %>%
 
 Euro_Countries_GDP_Growth_Log <- Euro_Countries_GDP_Growth_Log %>%
   mutate(
-    gdp_growth_log_wins = winsorize(gdp_growth_log)
+    gdp_growth_log_wins_001 = winsorize(gdp_growth_log, probs = c(0.01, 0.99)),
+    gdp_growth_log_wins_005 = winsorize(gdp_growth_log, probs = c(0.05, 0.95))
   )
 
 
@@ -151,6 +223,12 @@ adf_results_countries <- run_adf_test(
   time_col = "Quarter"
 )
 
+adf_results_countries_deflator <- run_adf_test(
+  data = Euro_Countries_GDP_Growth_Log,
+  value_col = "deflator_2005_index_seas",
+  group_col = "Country",
+  time_col = "Quarter"
+)
 
 
 #######################################################################
@@ -159,43 +237,83 @@ adf_results_countries <- run_adf_test(
 
 
 Euro_Countries_GDP_Growth_Log <- Euro_Countries_GDP_Growth_Log |>
-  dplyr::mutate(true_growth = (exp(gdp_growth_log_wins/100) - 1)*100 )
+  dplyr::mutate(nominal_growth = (exp(gdp_growth_log/100) - 1)*100 )
 
 
 #######################################################################
 ## 8. Create a annual obsreved growth rate table 
 #######################################################################
 
+############# 8.1 Add the annual nominal  to the table #########
 
 annual_growth_observed <- Euro_Countries_GDP_Growth_Log %>%
-  # Make sure Quarter and true_growth are numeric
   mutate(
     Quarter = as.numeric(as.character(Quarter)),
-    true_growth = as.numeric(as.character(true_growth)),
-    year = floor(Quarter)
+    year    = floor(Quarter)
   ) %>%
-  
-  # Group by country and year
   group_by(Country, year) %>%
-  
-  # Keep only full years
-  filter(n() == 4, all(!is.na(true_growth))) %>%
-  
-  # Annual compounded growth
+  # only keep full years with 4 quarters and non-NA Nominal_GDP
+  filter(n() == 4, all(!is.na(Nominal_GDP))) %>%
   summarise(
-    annual_growth = (prod(1 + true_growth / 100) - 1) * 100,
+    annual_nominal = sum(Nominal_GDP),
     .groups = "drop"
   ) %>%
-  
-  # Pivot to wide format
-  mutate(year = as.character(year)) %>%
+  mutate(
+    year = as.character(year),
+    type = "nominal_gdp"      # label for this kind of series
+  ) %>%
   pivot_wider(
+    id_cols    = c(Country, type),
     names_from = year,
-    values_from = annual_growth
+    values_from = annual_nominal
   )
 
+############# 8.2 Add the annual deflator to the table #################
 
 
+annual_deflator <- Euro_Countries_GDP_Growth_Log %>%
+  mutate(
+    Quarter = as.numeric(as.character(Quarter)),
+    year    = floor(Quarter)
+  ) %>%
+  group_by(Country, year) %>%
+  # only full years with 4 quarters and non-missing deflators
+  filter(n() == 4, all(!is.na(deflator_2005_index))) %>%
+  summarise(
+    annual_deflator = mean(deflator_2005_index),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    year = as.character(year),
+    type = "deflator"
+  ) %>%
+  pivot_wider(
+    id_cols    = c(Country, type),
+    names_from = year,
+    values_from = annual_deflator
+  )
+
+annual_growth_observed <- annual_growth_observed %>%
+  bind_rows(annual_deflator) %>%
+  arrange(Country, type) %>%
+  relocate(`2000`, .after = type)
+  
+
+
+############# 8.3 Add the annual nominal growths to the table ################
+
+annual_growth_observed <- compute_nominal_gdp_growth(annual_growth_observed)
+
+
+
+############# Add the real GDP and growth value to the table ##########
+
+annual_growth_observed <- add_real_gdp(annual_growth_observed)
+
+annual_growth_observed <- compute_real_gdp_growth(annual_growth_observed)
+
+annual_growth_observed_display <- annual_growth_observed %>%
+  mutate(across(matches("^[0-9]{4}$"), ~ format(., scientific = FALSE)))
 
 
 #######################################################################
