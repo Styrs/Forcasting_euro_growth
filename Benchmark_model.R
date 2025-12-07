@@ -95,7 +95,8 @@ for (country_name in countries) {
       model         = arma_fit$model,
       start_quarter = start_quarter,
       end_quarter   = end_quarter,
-      horizons      = forecast_horizons
+      horizons      = forecast_horizons,
+      gdp_growth_to_train_on = "gdp_growth_log_wins_001"
     )
     
     
@@ -214,3 +215,8 @@ lb_results_bench <- ljung_box_by_horizon(error_matrix_bench, K = 8,results_table
 
 lb_table_bench <- lb_results_bench$lb_table
 results_table_bench <- lb_results_bench$results_table
+
+
+xtable(MZ_table_bench)
+xtable(lb_table_bench)
+xtable(results_table_bench)
