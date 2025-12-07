@@ -20,6 +20,10 @@ download.file(url_data_countries, destfile = "data.xlsx", mode = "wb")
 Euro_Countries_GDP_Growth_Log <- read_excel("data.xlsx")
 
 
+url_data_countries <- "https://github.com/Styrs/Forcasting_euro_growth/raw/refs/heads/main/annual_growth_observed.xlsx"
+download.file(url_data_countries, destfile = "data.xlsx", mode = "wb")
+annual_growth_observed <- read_excel("data.xlsx")
+
 
 
 ###################################################################################
@@ -55,7 +59,8 @@ Euro_Countries_GDP_Growth_Log <- read_excel("data.xlsx")
       data          = Euro_Countries_GDP_Growth_Log,
       country_name  = country_name,
       start_quarter = start_quarter,
-      end_quarter   = end_quarter
+      end_quarter   = end_quarter,
+      gdp_growth_to_train_on = "gdp_growth_log_wins_001"
     )
     
     arma_fit <- select_best_arma(country_data$ts_data,criterion = "AIC")
@@ -77,6 +82,10 @@ Euro_Countries_GDP_Growth_Log <- read_excel("data.xlsx")
   
     
   }
+  
+  
+
+  
   
   #-------------------------------------------------------------------------------
   # CHAPTER 2 – Make a table of the results
@@ -143,34 +152,37 @@ Euro_Countries_GDP_Growth_Log <- read_excel("data.xlsx")
       Forecast_Growth_rate = 100 * (exp(Forecast_Growth_logdiff / 100) - 1),
     )
   
+  #compute the yearly nominal GDP
+  annual_growth_forecast <- compute_annual_nominal(forecast_table_growth_countries,Euro_Countries_GDP_Growth_Log)
+
+  #compute the yearly nominal growth 
+  annual_growth_forecast <- compute_growth(annual_growth_forecast,annual_growth_observed, which = "nominal")
   
+  #Add the forecasted deflator 
+  annual_growth_forecast <- add_deflator_forecast_to_annual(annual_growth_forecast,annual_deflator_forecast)
+
+  #compute the yearly real GDP
+  annual_growth_forecast <- add_real_gdp(annual_growth_forecast)
   
-  annual_growth_table <- compute_annual_growth(forecast_table_growth_countries,Euro_Countries_GDP_Growth_Log,rate_in_pourcent= TRUE)
+  #compute the yearly real growth
+  annual_growth_forecast <- compute_growth(annual_growth_forecast,annual_growth_observed, which = "real")
   
-  
-  
-  
-  
-  
-  
-  
+  annual_growth_forecast_display <- annual_growth_forecast %>%
+    mutate(across(matches("^[0-9]{4}$"), ~ format(., scientific = FALSE)))
   
   #-------------------------------------------------------------------------------
   # CHAPTER 5 – Plots of the forecast 
   #-------------------------------------------------------------------------------
   
+  ################### Prepare the annual data (forecast+observed) ##############
   
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
-  
+  annual_growth_all <- full_join(
+    annual_growth_observed,
+    annual_growth_forecast,
+    by = c("Country", "type")
+  )
+  annual_growth_all <- annual_growth_all %>%
+    mutate(across(matches("^[0-9]{4}$"), ~ format(., scientific = FALSE)))
   
   
   
