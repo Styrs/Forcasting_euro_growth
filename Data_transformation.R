@@ -298,7 +298,23 @@ annual_growth_observed <- annual_growth_observed %>%
   arrange(Country, type) %>%
   relocate(`2000`, .after = type)
   
+# --- copy Eurozone deflator to "Sum Small euro countries" ---
 
+# identify year columns (2000, 2001, 2002, ...)
+year_cols <- grep("^[0-9]{4}$", names(annual_growth_observed), value = TRUE)
+
+# take the Eurozone deflator row
+euro_deflator_row <- annual_growth_observed %>%
+  filter(Country == "Eurozone", type == "deflator")
+
+# create the "Sum Small euro countries" deflator row by copying Eurozone
+sum_small_deflator_row <- euro_deflator_row %>%
+  mutate(Country = "Sum Small euro countries")
+
+# add it to the table (if not already there) and keep things ordered
+annual_growth_observed <- annual_growth_observed %>%
+  bind_rows(sum_small_deflator_row) %>%
+  arrange(Country, type)
 
 ############# 8.3 Add the annual nominal growths to the table ################
 
