@@ -189,3 +189,12 @@ compute_annual_deflator_forecast <- function(deflator_forecast,
 annual_deflator_forecast <- compute_annual_deflator_forecast(deflator_forecast,Euro_Countries_GDP_Growth_Log)
 
 
+#copy the Eurozone's forecast for the sum of small countries. 
+year_cols <- grep("^[0-9]{4}$", names(annual_deflator_forecast), value = TRUE)
+euro_row <- annual_deflator_forecast %>%
+  filter(Country == "Eurozone")
+sum_small_row <- euro_row %>%
+  mutate(Country = "Sum Small euro countries")
+annual_deflator_forecast <- annual_deflator_forecast %>%
+  bind_rows(sum_small_row) %>%
+  arrange(Country)
