@@ -841,6 +841,271 @@ library(rlang)
   
   
   
+  ######################## Compute the matrix of country's weight ##############
+  
+  compute_country_weight <- function(annual_growth_all) {
+    
+    # 1. Identify year columns (e.g. 2000, 2001, 2002…)
+    year_cols <- grep("^[0-9]{4}$", names(annual_growth_all), value = TRUE)
+    
+    # 2. Keep only nominal GDP rows
+    nominal_df <- annual_growth_all %>%
+      filter(type == "nominal_gdp")
+    
+    # 3. Extract Eurozone nominal GDP row
+    euro_row <- nominal_df %>%
+      filter(Country == "Eurozone") %>%
+      select(all_of(year_cols))
+    
+    # 4. Compute weights for each country
+    country_weight <- nominal_df %>%
+      mutate(across(
+        all_of(year_cols),
+        ~ .x / as.numeric(euro_row[[cur_column()]]),   # divide by Eurozone
+        .names = "{.col}"
+      )) %>%
+      select(Country, all_of(year_cols)) %>%
+      arrange(Country)
+    
+    return(country_weight)
+  }
+  
+  ######################## Compute pure growth contribution to euro growth #####
+  
+  
+  
+  compute_country_weighted_growth <- function(annual_growth_all,
+                                              matrix_country_weight) {
+    
+    
+    # 1. Year columns present in both data frames
+    year_cols <- intersect(
+      grep("^[0-9]{4}$", names(annual_growth_all), value = TRUE),
+      grep("^[0-9]{4}$", names(matrix_country_weight), value = TRUE)
+    )
+    
+    # 2. Keep only nominal_growth rows
+    nominal_growth <- annual_growth_all %>%
+      filter(type == "nominal_growth") %>%
+      select(Country, type, all_of(year_cols))
+    
+    # 3. Long format for growth
+    nominal_growth_long <- nominal_growth %>%
+      pivot_longer(
+        cols      = all_of(year_cols),
+        names_to  = "year",
+        values_to = "growth"
+      )
+    
+    # 4. Long format for weights
+    weight_long <- matrix_country_weight %>%
+      select(Country, all_of(year_cols)) %>%
+      pivot_longer(
+        cols      = all_of(year_cols),
+        names_to  = "year",
+        values_to = "weight"
+      )
+    
+    # 5. Merge and compute weighted growth
+    combined_long <- nominal_growth_long %>%
+      left_join(weight_long, by = c("Country", "year")) %>%
+      mutate(value = growth * weight) %>%
+      select(Country, year, value)
+    
+    # 6. Wide format & final structure
+    Country_weighted_growth <- combined_long %>%
+      mutate(type = "nominal_growth_pure_contribution") %>%
+      select(Country, type, year, value) %>%
+      pivot_wider(
+        names_from  = year,
+        values_from = value
+      ) %>%
+      arrange(Country, type)
+    
+    return(Country_weighted_growth)
+  }
+  
+  
+  
+  ######################## Compute relative growth contrib. to euro growth #####
+  
+  add_relative_contribution_nominal <- function(countries_gowth_contributions) {
+   
+    
+    # 1. Identify year columns
+    year_cols <- grep("^[0-9]{4}$", names(countries_gowth_contributions), value = TRUE)
+    
+    # 2. Extract Eurozone nominal growth (= its pure contribution)
+    euro_growth <- countries_gowth_contributions %>%
+      filter(Country == "Eurozone",
+             type == "nominal_growth_pure_contribution") %>%
+      select(all_of(year_cols))
+    
+    # 3. Compute relative contributions for each country
+    relative_contrib <- countries_gowth_contributions %>%
+      filter(type == "nominal_growth_pure_contribution") %>%
+      mutate(
+        type = "nominal_pourcent",
+        across(
+          all_of(year_cols),
+          ~ .x / as.numeric(euro_growth[[cur_column()]])*100,   # ratio; add *100 if % desired
+          .names = "{.col}"
+        )
+      )
+    
+    # 4. Bind back to the original table
+    updated_table <- countries_gowth_contributions %>%
+      bind_rows(relative_contrib) %>%
+      arrange(Country, type)
+    
+    return(updated_table)
+  }
+  ######################## Compute diff between real and nominal growth ########
+  
+  compute_growth_nominal_real_diff <- function(annual_growth_all) {
+    
+    # 1. Identify year columns
+    year_cols <- grep("^[0-9]{4}$", names(annual_growth_all), value = TRUE)
+    
+    # 2. Real growth in long format
+    real_long <- annual_growth_all %>%
+      filter(type == "real_growth") %>%
+      select(Country, all_of(year_cols)) %>%
+      pivot_longer(
+        cols      = all_of(year_cols),
+        names_to  = "year",
+        values_to = "real_growth"
+      )
+    
+    # 3. Nominal growth in long format
+    nominal_long <- annual_growth_all %>%
+      filter(type == "nominal_growth") %>%
+      select(Country, all_of(year_cols)) %>%
+      pivot_longer(
+        cols      = all_of(year_cols),
+        names_to  = "year",
+        values_to = "nominal_growth"
+      )
+    
+    # 4. Join and compute diff = real - nominal
+    diff_long <- real_long %>%
+      inner_join(nominal_long, by = c("Country", "year")) %>%
+      mutate(diff = real_growth - nominal_growth)
+    
+    # 5. Back to wide: one row per country, one column per year
+    growth_nominal_real_diff <- diff_long %>%
+      select(Country, year, diff) %>%
+      pivot_wider(
+        names_from  = "year",
+        values_from = "diff"
+      ) %>%
+      arrange(Country)
+    
+    return(growth_nominal_real_diff)
+  }
+  ######################## Compute pure real gowth contrib. to euro growth #####
+  
+  
+  add_real_growth_pure_contribution <- function(countries_gowth_contributions,
+                                                matrix_country_weitgh,
+                                                matric_country_real_nominal_diff) {
+    library(dplyr)
+    library(tidyr)
+    
+    # Year columns common to all three tables
+    year_cols <- Reduce(
+      intersect,
+      list(
+        grep("^[0-9]{4}$", names(countries_gowth_contributions), value = TRUE),
+        grep("^[0-9]{4}$", names(matrix_country_weitgh), value = TRUE),
+        grep("^[0-9]{4}$", names(matric_country_real_nominal_diff), value = TRUE)
+      )
+    )
+    
+    ## 1. Nominal growth pure contribution (long)
+    nominal_contrib_long <- countries_gowth_contributions %>%
+      filter(type == "nominal_growth_pure_contribution") %>%
+      select(Country, all_of(year_cols)) %>%
+      pivot_longer(
+        cols      = all_of(year_cols),
+        names_to  = "year",
+        values_to = "nominal_contrib"
+      )
+    
+    ## 2. Real–nominal growth difference (long)
+    diff_long <- matric_country_real_nominal_diff %>%
+      select(Country, all_of(year_cols)) %>%
+      pivot_longer(
+        cols      = all_of(year_cols),
+        names_to  = "year",
+        values_to = "real_nominal_diff"
+      )
+    
+    ## 3. Country weights (long)
+    weight_long <- matrix_country_weitgh %>%
+      select(Country, all_of(year_cols)) %>%
+      pivot_longer(
+        cols      = all_of(year_cols),
+        names_to  = "year",
+        values_to = "weight"
+      )
+    
+    ## 4. Join everything and compute real contribution
+    real_contrib_long <- nominal_contrib_long %>%
+      left_join(diff_long,   by = c("Country", "year")) %>%
+      left_join(weight_long, by = c("Country", "year")) %>%
+      mutate(
+        value = nominal_contrib + real_nominal_diff * weight,
+        type  = "real_growth_pure_contribution"
+      ) %>%
+      select(Country, type, year, value)
+    
+    ## 5. Back to wide and bind to original table
+    real_contrib_wide <- real_contrib_long %>%
+      pivot_wider(
+        names_from  = "year",
+        values_from = "value"
+      )
+    
+    updated_countries_contributions <- countries_gowth_contributions %>%
+      bind_rows(real_contrib_wide) %>%
+      arrange(Country, type)
+    
+    return(updated_countries_contributions)
+  }
+  ######################## Compute relative real growth contrib. ###############
+  
+  add_relative_contribution_real <- function(countries_gowth_contributions) {
+    
+    
+    # 1. Identify year columns
+    year_cols <- grep("^[0-9]{4}$", names(countries_gowth_contributions), value = TRUE)
+    
+    # 2. Extract Eurozone nominal growth (= its pure contribution)
+    euro_growth <- countries_gowth_contributions %>%
+      filter(Country == "Eurozone",
+             type == "real_growth_pure_contribution") %>%
+      select(all_of(year_cols))
+    
+    # 3. Compute relative contributions for each country
+    relative_contrib <- countries_gowth_contributions %>%
+      filter(type == "real_growth_pure_contribution") %>%
+      mutate(
+        type = "reel_pourcent",
+        across(
+          all_of(year_cols),
+          ~ .x / as.numeric(euro_growth[[cur_column()]])*100,   # ratio; add *100 if % desired
+          .names = "{.col}"
+        )
+      )
+    
+    # 4. Bind back to the original table
+    updated_table <- countries_gowth_contributions %>%
+      bind_rows(relative_contrib) %>%
+      arrange(Country, type)
+    
+    return(updated_table)
+  }
 ################################################################################
 # Function test the models
 ################################################################################
