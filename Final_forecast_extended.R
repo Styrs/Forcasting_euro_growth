@@ -171,7 +171,7 @@ annual_growth_observed <- read_excel("data.xlsx")
     mutate(across(matches("^[0-9]{4}$"), ~ format(., scientific = FALSE)))
   
   #-------------------------------------------------------------------------------
-  # CHAPTER 5 – Plots of the forecast 
+  # CHAPTER 5 – Compute the countries share of growth
   #-------------------------------------------------------------------------------
   
   ################### Prepare the annual data (forecast+observed) ##############
@@ -181,39 +181,23 @@ annual_growth_observed <- read_excel("data.xlsx")
     annual_growth_forecast,
     by = c("Country", "type")
   )
-  annual_growth_all <- annual_growth_all %>%
+  annual_growth_all_display <- annual_growth_all %>%
     mutate(across(matches("^[0-9]{4}$"), ~ format(., scientific = FALSE)))
   
   
+  matrix_country_weitgh <- compute_country_weight(annual_growth_all)
   
   
+  countries_gowth_contributions <- compute_country_weighted_growth(annual_growth_all,matrix_country_weitgh)
   
+  countries_gowth_contributions <- add_relative_contribution_nominal(countries_gowth_contributions)
   
-  # 1. Build a dataset with both series for the Eurozone
-  df_plot <- Euro_Countries_GDP_Growth_Log %>%
-    filter(Country == "Eurozone",
-           Quarter >= 2010) %>%
-    select(Quarter, true_growth) %>%
-    full_join(
-      forecast_table_growth_countries %>%
-        filter(Country == "Eurozone",
-               Forecasted_Quarter >= 2010) %>%
-        transmute(Quarter = Forecasted_Quarter,
-                  forecast_growth = Forecast_Growth_rate),
-      by = "Quarter"
-    ) %>%
-    arrange(Quarter)
+  matrix_country_real_nominal_diff <- compute_growth_nominal_real_diff(annual_growth_all)
   
-  # 2. Plot: blue = true_growth, red = forecast_growth
-  ggplot(df_plot, aes(x = Quarter)) +
-    geom_line(aes(y = true_growth, colour = "True growth")) +
-    geom_line(aes(y = forecast_growth, colour = "Forecast growth")) +
-    scale_colour_manual(values = c("True growth" = "blue",
-                                   "Forecast growth" = "red")) +
-    labs(x = "Quarter",
-         y = "Growth rate",
-         colour = "",
-         title = "Eurozone: True vs Forecast GDP Growth") +
-    theme_minimal()
+  countries_gowth_contributions <- add_real_growth_pure_contribution(
+    countries_gowth_contributions,
+    matrix_country_weitgh,
+    matrix_country_real_nominal_diff
+  )
   
- 
+  countries_gowth_contributions <- add_relative_contribution_real(countries_gowth_contributions)
