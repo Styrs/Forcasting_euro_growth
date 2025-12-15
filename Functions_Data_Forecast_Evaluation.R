@@ -1106,6 +1106,84 @@ library(rlang)
     
     return(updated_table)
   }
+  ######################## Correct pure real of the sum of small countries #####
+  correct_purreel_small_countries <- function(data,
+                                    target_country = "Sum Small euro countries",
+                                    target_type = "real_growth_pure_contribution",
+                                    eurozone_country = "Eurozone",
+                                    big_countries = c("France", "Germany", "Italy", "Netherlands", "Spain"),
+                                    years = 2001:2027,
+                                    verbose = TRUE,
+                                    print_years = c(2001, 2005, 2010, 2015, 2020, 2025, 2027)) {
+    
+    # 1) Find the target row to update
+    row_index <- which(data$Country == target_country & data$type == target_type)
+    
+    if (length(row_index) != 1) {
+      stop(sprintf(
+        "Error: target row not found or not unique (%d found).",
+        length(row_index)
+      ))
+    }
+    
+    if (verbose) {
+      cat("Row index to update:", row_index, "\n")
+      cat("Row found:", data$Country[row_index], data$type[row_index], "\n\n")
+    }
+    
+    # 2) Keep only rows of the relevant type
+    real_data <- subset(data, type == target_type)
+    
+    # Helper: safely extract a single value (or NA if missing)
+    get_val <- function(country, year_col) {
+      v <- real_data[real_data$Country == country, year_col]
+      if (nrow(v) == 0) return(NA_real_)
+      if (nrow(v) > 1 && verbose) {
+        warning(sprintf(
+          "Duplicate rows detected for Country='%s' and type='%s'. Using the first one.",
+          country, target_type
+        ))
+      }
+      as.numeric(v[1, 1])
+    }
+    
+    # 3) Loop over years
+    year_cols <- as.character(years)
+    
+    for (year in year_cols) {
+      if (!year %in% names(data)) {
+        stop(sprintf("Missing year column in data: %s", year))
+      }
+      
+      eurozone_val <- get_val(eurozone_country, year)
+      big_vals <- sapply(big_countries, get_val, year_col = year)
+      
+      # Eurozone minus the sum of large countries
+      new_value <- eurozone_val - sum(big_vals)
+      
+      data[row_index, year] <- new_value
+      
+      if (verbose && as.integer(year) %in% print_years) {
+        cat(sprintf(
+          "%s: %.4f = %.4f - (%s)\n",
+          year, new_value, eurozone_val,
+          paste(sprintf("%.4f", big_vals), collapse = " + ")
+        ))
+      }
+    }
+    
+    if (verbose) {
+      cat("\n=== SUMMARY OF CHANGES ===\n")
+      years_show <- intersect(
+        as.character(c(2001, 2005, 2010, 2015, 2020, 2021:2027)),
+        names(data)
+      )
+      print(data[row_index, c("Country", "type", years_show), drop = FALSE])
+    }
+    
+    return(data)
+  }
+  
 ################################################################################
 # Function test the models
 ################################################################################
@@ -1543,7 +1621,7 @@ library(rlang)
                               results_table_bench,
                               col_model  = "MSFE",   # name of MSFE column in results_table
                               col_bench  = "MSFE",   # name of MSFE column in results_table_bench
-                              new_col    = "pred_R2") {
+                              new_col    = "ratio_MSFE") {
     # predictive R^2 for each horizon (row)
     ratio_M_onB <- results_table[[col_model]] / results_table_bench[[col_bench]]
     
