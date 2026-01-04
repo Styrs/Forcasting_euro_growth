@@ -24,7 +24,7 @@ url_data_countries <- "https://github.com/Styrs/Forcasting_euro_growth/raw/refs/
 download.file(url_data_countries, destfile = "data.xlsx", mode = "wb")
 annual_growth_observed <- read_excel("data.xlsx")
 
-run_deflator_forecast <- function(Euro_Countries_GDP_Growth_Log,annual_growth_observed){
+run_deflator_forecast <- function(Euro_Countries_GDP_Growth_Log,annual_growth_observed,confidence_quantiles){
   
   ###################################################################################
   #The forecast
@@ -73,10 +73,15 @@ run_deflator_forecast <- function(Euro_Countries_GDP_Growth_Log,annual_growth_ob
       horizons      = 1:10
     )
     
+    # compute the quantiles (Gaussian assumption)
+    quantiles_forecast <- compute_forecast_quantiles(fc_deflator, probs = c(confidence_quantiles, 1-confidence_quantiles))
+    
+    
     # store results for this country
     all_country_deflator[[country_name]] <- list(
       arma_fit      = arma_fit,
       forecast      = fc_deflator,
+      forecast_q    = quantiles_forecast,
       train_data    = country_data$train_data
     )
     
@@ -97,7 +102,10 @@ run_deflator_forecast <- function(Euro_Countries_GDP_Growth_Log,annual_growth_ob
         Country        = country_name,
         Horizon        = 1:10,
         Forecasted_Quarter  = res$forecast$forecast_dates,
+        
         Forecast_deflator = res$forecast$forecast_values,
+        Forecast_deflator_q10  = res$forecast_q$q10,
+        Forecast_deflator_q90  = res$forecast_q$q90,
         ARMA           = paste0("ARMA(",
                                 res$arma_fit$order["p"], ",",
                                 res$arma_fit$order["q"], ")"),
@@ -111,76 +119,116 @@ run_deflator_forecast <- function(Euro_Countries_GDP_Growth_Log,annual_growth_ob
                                                Euro_Countries_GDP_Growth_Log) {
     ## --- 1. Get last observed deflator level for each country ----
     last_deflator <- Euro_Countries_GDP_Growth_Log %>%
-      group_by(Country) %>%
-      filter(Quarter == max(Quarter, na.rm = TRUE)) %>%
-      summarise(
+      dplyr::group_by(Country) %>%
+      dplyr::filter(Quarter == max(Quarter, na.rm = TRUE)) %>%
+      dplyr::summarise(
         start_level = deflator_2005_index_seas[1],
         .groups = "drop"
       )
     
-    ## --- 2. Build forecast deflator LEVELS from log-diff forecasts ----
+    ## --- 2. Build forecast deflator LEVELS from log-diff forecasts (mean + q10 + q90) ----
     fc_levels <- deflator_forecast %>%
-      left_join(last_deflator, by = "Country") %>%
-      group_by(Country) %>%
-      arrange(Horizon, .by_group = TRUE) %>%
-      mutate(
-        # Forecast_deflator is a log-diff in %, so use exp(x/100)
-        growth_factor = exp(Forecast_deflator / 100),
-        deflator_fcst_level = start_level * cumprod(growth_factor)
+      dplyr::left_join(last_deflator, by = "Country") %>%
+      dplyr::group_by(Country) %>%
+      dplyr::arrange(Horizon, .by_group = TRUE) %>%
+      dplyr::mutate(
+        # mean path
+        growth_factor      = exp(Forecast_deflator / 100),
+        deflator_fcst_level = start_level * cumprod(growth_factor),
+        
+        # q10 path
+        growth_factor_q10      = exp(Forecast_deflator_q10 / 100),
+        deflator_fcst_level_q10 = start_level * cumprod(growth_factor_q10),
+        
+        # q90 path
+        growth_factor_q90      = exp(Forecast_deflator_q90 / 100),
+        deflator_fcst_level_q90 = start_level * cumprod(growth_factor_q90)
       ) %>%
-      ungroup() %>%
-      select(Country, Forecasted_Quarter, deflator_fcst_level)
+      dplyr::ungroup() %>%
+      dplyr::select(
+        Country, Forecasted_Quarter,
+        deflator_fcst_level,
+        deflator_fcst_level_q10,
+        deflator_fcst_level_q90
+      )
     
     ## --- 3. Prepare forecast quarters by year and quarter index ----
     fc_q <- fc_levels %>%
-      mutate(
+      dplyr::mutate(
         year    = floor(Forecasted_Quarter),
         quarter = as.integer(round((Forecasted_Quarter - year) * 4)) + 1L
       ) %>%
-      select(Country, year, quarter, deflator_fcst_level)
+      dplyr::select(
+        Country, year, quarter,
+        deflator_fcst_level,
+        deflator_fcst_level_q10,
+        deflator_fcst_level_q90
+      )
     
     years_forecast     <- sort(unique(fc_q$year))
     countries_forecast <- unique(fc_q$Country)
     
     ## --- 4. Prepare observed deflator quarters for those years ----
     obs_q <- Euro_Countries_GDP_Growth_Log %>%
-      filter(
+      dplyr::filter(
         Country %in% countries_forecast,
         floor(Quarter) %in% years_forecast
       ) %>%
-      mutate(
+      dplyr::mutate(
         year    = floor(Quarter),
         quarter = as.integer(round((Quarter - year) * 4)) + 1L
       ) %>%
-      select(Country, year, quarter,
-             deflator_obs_level = deflator_2005_index_seas)
+      dplyr::select(
+        Country, year, quarter,
+        deflator_obs_level = deflator_2005_index_seas
+      )
     
     ## --- 5. Combine: forecast overrides observed where available ----
     combined_q <- obs_q %>%
-      full_join(fc_q,
-                by = c("Country", "year", "quarter")) %>%
-      mutate(
-        deflator = ifelse(!is.na(deflator_fcst_level),
-                          deflator_fcst_level,
-                          deflator_obs_level)
+      dplyr::full_join(fc_q, by = c("Country", "year", "quarter")) %>%
+      dplyr::mutate(
+        # For quarters without forecast, fallback to observed for ALL paths
+        deflator_mean = dplyr::if_else(!is.na(deflator_fcst_level),
+                                       deflator_fcst_level,
+                                       deflator_obs_level),
+        deflator_q10  = dplyr::if_else(!is.na(deflator_fcst_level_q10),
+                                       deflator_fcst_level_q10,
+                                       deflator_obs_level),
+        deflator_q90  = dplyr::if_else(!is.na(deflator_fcst_level_q90),
+                                       deflator_fcst_level_q90,
+                                       deflator_obs_level)
       )
     
-    ## --- 6. Annual mean deflator per Country-Year ----
+    ## --- 6. Annual mean deflator per Country-Year (mean of quarters) ----
     annual_deflator <- combined_q %>%
-      group_by(Country, year) %>%
-      summarise(
-        annual_deflator = mean(deflator, na.rm = TRUE),
+      dplyr::group_by(Country, year) %>%
+      dplyr::summarise(
+        annual_deflator     = mean(deflator_mean, na.rm = TRUE),
+        annual_deflator_q10 = mean(deflator_q10,  na.rm = TRUE),
+        annual_deflator_q90 = mean(deflator_q90,  na.rm = TRUE),
         .groups = "drop"
       )
     
-    ## --- 7. Wide table: Country x Year ----
-    annual_deflator_wide <- annual_deflator %>%
-      mutate(year = as.character(year)) %>%
-      pivot_wider(
-        names_from  = year,
-        values_from = annual_deflator
-      ) %>%
-      arrange(Country)
+    ## --- 7. Wide table: Country x Year (three blocks of columns) ----
+    annual_mean_wide <- annual_deflator %>%
+      dplyr::select(Country, year, annual_deflator) %>%
+      dplyr::mutate(year = as.character(year)) %>%
+      tidyr::pivot_wider(names_from = year, values_from = annual_deflator)
+    
+    annual_q10_wide <- annual_deflator %>%
+      dplyr::select(Country, year, annual_deflator_q10) %>%
+      dplyr::mutate(year = paste0(as.character(year), "_q10")) %>%
+      tidyr::pivot_wider(names_from = year, values_from = annual_deflator_q10)
+    
+    annual_q90_wide <- annual_deflator %>%
+      dplyr::select(Country, year, annual_deflator_q90) %>%
+      dplyr::mutate(year = paste0(as.character(year), "_q90")) %>%
+      tidyr::pivot_wider(names_from = year, values_from = annual_deflator_q90)
+    
+    annual_deflator_wide <- annual_mean_wide %>%
+      dplyr::left_join(annual_q10_wide, by = "Country") %>%
+      dplyr::left_join(annual_q90_wide, by = "Country") %>%
+      dplyr::arrange(Country)
     
     return(annual_deflator_wide)
   }
@@ -189,15 +237,16 @@ run_deflator_forecast <- function(Euro_Countries_GDP_Growth_Log,annual_growth_ob
   annual_deflator_forecast <- compute_annual_deflator_forecast(deflator_forecast,Euro_Countries_GDP_Growth_Log)
   
   
-  #copy the Eurozone's forecast for the sum of small countries. 
-  year_cols <- grep("^[0-9]{4}$", names(annual_deflator_forecast), value = TRUE)
+  # Copy the Eurozone annual deflator (mean + quantiles) for Sum Small euro countries
   euro_row <- annual_deflator_forecast %>%
-    filter(Country == "Eurozone")
+    dplyr::filter(Country == "Eurozone")
+  
   sum_small_row <- euro_row %>%
-    mutate(Country = "Sum Small euro countries")
+    dplyr::mutate(Country = "Sum Small euro countries")
+  
   annual_deflator_forecast <- annual_deflator_forecast %>%
-    bind_rows(sum_small_row) %>%
-    arrange(Country)
+    dplyr::bind_rows(sum_small_row) %>%
+    dplyr::arrange(Country)
   
   return(annual_deflator_forecast)
 }
