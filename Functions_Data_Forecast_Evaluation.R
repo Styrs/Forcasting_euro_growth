@@ -132,46 +132,104 @@ library(rlang)
   }
   ######################## Adding the real gdp values #################
   
-  add_real_gdp <- function(annual_growth_observed) {
+  add_real_gdp <- function(annual_growth_observed,
+                           add_quantiles = FALSE) {
     
     # ---- 1. Long format ----
     annual_long <- annual_growth_observed %>%
-      pivot_longer(
+      tidyr::pivot_longer(
         cols      = -c(Country, type),
         names_to  = "year",
         values_to = "value"
       )
     
-    # ---- 2. Compute annual real GDP: nominal_gdp * 100 / deflator ----
+    # ---- 2. Mean real GDP: nominal_gdp * 100 / deflator ----
     real_gdp_df <- annual_long %>%
-      filter(type %in% c("nominal_gdp", "deflator")) %>%
-      pivot_wider(
-        id_cols    = c(Country, year),
-        names_from = type,
+      dplyr::filter(type %in% c("nominal_gdp", "deflator")) %>%
+      tidyr::pivot_wider(
+        id_cols     = c(Country, year),
+        names_from  = type,
         values_from = value
       ) %>%
-      mutate(
-        real_gdp = ifelse(
+      dplyr::mutate(
+        real_gdp = dplyr::if_else(
           is.na(nominal_gdp) | is.na(deflator),
           NA_real_,
           nominal_gdp * 100 / deflator
         )
       )
     
-    # ---- 3. Turn real GDP into wide "type = real_gdp" rows ----
     real_gdp_rows <- real_gdp_df %>%
-      select(Country, year, real_gdp) %>%
-      mutate(type = "real_gdp") %>%
-      pivot_wider(
-        id_cols    = c(Country, type),
-        names_from = year,
+      dplyr::select(Country, year, real_gdp) %>%
+      dplyr::mutate(type = "real_gdp") %>%
+      tidyr::pivot_wider(
+        id_cols     = c(Country, type),
+        names_from  = year,
         values_from = real_gdp
       )
     
-    # ---- 4. Bind original data + real GDP rows ----
+    # ---- 3. Optional: quantile real GDP rows ----
+    quantile_rows <- NULL
+    if (isTRUE(add_quantiles)) {
+      
+      # q10
+      real_gdp_q10_df <- annual_long %>%
+        dplyr::filter(type %in% c("nominal_gdp_q10", "deflator_q10")) %>%
+        tidyr::pivot_wider(
+          id_cols     = c(Country, year),
+          names_from  = type,
+          values_from = value
+        ) %>%
+        dplyr::mutate(
+          real_gdp_q10 = dplyr::if_else(
+            is.na(nominal_gdp_q10) | is.na(deflator_q10),
+            NA_real_,
+            nominal_gdp_q10 * 100 / deflator_q10
+          )
+        )
+      
+      real_gdp_q10_rows <- real_gdp_q10_df %>%
+        dplyr::select(Country, year, real_gdp_q10) %>%
+        dplyr::mutate(type = "real_gdp_q10") %>%
+        tidyr::pivot_wider(
+          id_cols     = c(Country, type),
+          names_from  = year,
+          values_from = real_gdp_q10
+        )
+      
+      # q90
+      real_gdp_q90_df <- annual_long %>%
+        dplyr::filter(type %in% c("nominal_gdp_q90", "deflator_q90")) %>%
+        tidyr::pivot_wider(
+          id_cols     = c(Country, year),
+          names_from  = type,
+          values_from = value
+        ) %>%
+        dplyr::mutate(
+          real_gdp_q90 = dplyr::if_else(
+            is.na(nominal_gdp_q90) | is.na(deflator_q90),
+            NA_real_,
+            nominal_gdp_q90 * 100 / deflator_q90
+          )
+        )
+      
+      real_gdp_q90_rows <- real_gdp_q90_df %>%
+        dplyr::select(Country, year, real_gdp_q90) %>%
+        dplyr::mutate(type = "real_gdp_q90") %>%
+        tidyr::pivot_wider(
+          id_cols     = c(Country, type),
+          names_from  = year,
+          values_from = real_gdp_q90
+        )
+      
+      quantile_rows <- dplyr::bind_rows(real_gdp_q10_rows, real_gdp_q90_rows)
+    }
+    
+    # ---- 4. Bind original data + real GDP rows (+ optional quantiles) ----
     out <- annual_growth_observed %>%
-      bind_rows(real_gdp_rows) %>%
-      arrange(Country, type)
+      dplyr::bind_rows(real_gdp_rows) %>%
+      dplyr::bind_rows(quantile_rows) %>%
+      dplyr::arrange(Country, type)
     
     return(out)
   }
@@ -315,14 +373,16 @@ library(rlang)
   
   
   
-  select_best_arma <- function(ts_data, max_p = 5, max_q = 5,
+  select_best_arma <- function(ts_data,
+                               max_p    = 5,
+                               max_q    = 5,
                                criterion = c("AIC", "BIC")) {
-    
-    # Match the criterion argument and standardize
     criterion <- match.arg(criterion)
     
     best_score <- Inf
     best_model <- NULL
+    best_p     <- NA_integer_
+    best_q     <- NA_integer_
     
     for (p in 0:max_p) {
       for (q in 0:max_q) {
@@ -331,25 +391,25 @@ library(rlang)
         if (p == 0 && q == 0) next
         
         tryCatch({
-          candidate_model <- Arima(ts_data, order = c(p, 0, q))
+          # ARMA(p,q) with d = 0 via base R
+          candidate_model <- stats::arima(ts_data, order = c(p, 0, q))
           
-          # Compute the chosen information criterion
           candidate_score <- if (criterion == "AIC") {
-            AIC(candidate_model)
+            stats::AIC(candidate_model)
           } else {
-            BIC(candidate_model)
+            stats::BIC(candidate_model)
           }
           
-          # Keep the model if it is better
           if (candidate_score < best_score) {
             best_score <- candidate_score
             best_model <- candidate_model
+            best_p     <- p
+            best_q     <- q
           }
-          
         }, error = function(e) {
-          # silently skip problematic models
+          # silently skip models that fail to converge
+          NULL
         })
-        
       }
     }
     
@@ -357,37 +417,44 @@ library(rlang)
       stop("No ARMA model could be estimated for this time series.")
     }
     
-    return(list(
-      model = best_model,
-      order = arimaorder(best_model),
+    # Mimic the structure you use elsewhere: $model, $order, $aic, etc.
+    out <- list(
+      model     = best_model,
+      order     = c(p = best_p, q = best_q),
       criterion = criterion,
-      score = best_score
-    ))
+      score     = best_score,
+      aic       = stats::AIC(best_model),
+      bic       = stats::BIC(best_model)
+    )
+    
+    return(out)
   }
   
   ######################## Choose manual Arma specification ####################
   
-  fit_fixed_arma <- function(ts_data, p, q, 
+  fit_fixed_arma <- function(ts_data, p, q,
                              criterion = c("AIC", "BIC")) {
     
     criterion <- match.arg(criterion)
     
-    # Estimate the forced ARMA(p, q) model
-    best_model <- Arima(ts_data, order = c(p, 0, q))
+    # Estimate the forced ARMA(p, q) model with base R
+    model <- stats::arima(ts_data, order = c(p, 0, q))
     
     # Compute the requested information criterion
-    best_score <- if (criterion == "AIC") {
-      AIC(best_model)
+    score <- if (criterion == "AIC") {
+      stats::AIC(model)
     } else {
-      BIC(best_model)
+      stats::BIC(model)
     }
     
     # Return in the same format as select_best_arma()
     return(list(
-      model     = best_model,
-      order     = arimaorder(best_model),
+      model     = model,
+      order     = c(p = p, q = q),
       criterion = criterion,
-      score     = best_score
+      score     = score,
+      aic       = stats::AIC(model),
+      bic       = stats::BIC(model)
     ))
   }
   
@@ -398,9 +465,17 @@ library(rlang)
   
   forecast_arma_model <- function(model, start_quarter, end_quarter, horizons) {
     
-    # 1) Forecast growth with the ARMA model
-    fc <- forecast(model, h = max(horizons))
-    fc_values <- fc$mean[horizons]
+    # Ensure horizons is an integer vector (e.g. 1:10)
+    horizons <- sort(unique(as.integer(horizons)))
+    h_max    <- max(horizons)
+    
+    # 1) Forecast growth with the ARMA model using base R
+    # stats::predict() for "arima" objects
+    fc <- stats::predict(model, n.ahead = h_max)
+    
+    # fc$pred = point forecasts, fc$se = standard errors
+    fc_values <- fc$pred[horizons]
+    fc_standard_error <- fc$se[horizons]
     
     # 2) Compute numeric quarter values (same format as your input data)
     # Example: 2025.25, 2025.50, 2025.75, ...
@@ -409,8 +484,9 @@ library(rlang)
     # 3) Return a structured list
     return(list(
       forecast_values = as.numeric(fc_values),
-      forecast_dates  = forecast_quarters,   # numeric, not "YYYY-Qx"
-      forecast_object = fc
+      forecast_SD = as.numeric(fc_standard_error),
+      forecast_dates  = forecast_quarters,  # numeric, not "YYYY-Qx"
+      forecast_object = fc                  # now the list from stats::predict()
     ))
   }
   
@@ -421,12 +497,26 @@ library(rlang)
   
   add_forecast_nominal <- function(forecast_data,
                                    observed_data,
-                                   MultiHorizonSets = TRUE) {
+                                   MultiHorizonSets = TRUE,
+                                   add_quantiles = FALSE,
+                                   q_cols = c("Forecast_Growth_logdiff_q10",
+                                              "Forecast_Growth_logdiff_q90")) {
+    
+    # Helper to compute nominal level from a given logdiff column
+    add_one_nominal_path <- function(df, start_col, group_cols, logdiff_col, out_col) {
+      df %>%
+        group_by(across(all_of(group_cols))) %>%
+        arrange(Horizon, .by_group = TRUE) %>%
+        mutate(
+          growth_factor_tmp = exp(.data[[logdiff_col]] / 100),
+          !!out_col := .data[[start_col]] * cumprod(growth_factor_tmp)
+        ) %>%
+        ungroup() %>%
+        select(-growth_factor_tmp)
+    }
     
     if (MultiHorizonSets) {
-      ## ----- Case 1: End_Estimation_Set exists -----
-      # Match End_Estimation_Set with the base GDP to get starting level
-      
+      # ----- Case 1: End_Estimation_Set exists -----
       start_levels <- observed_data %>%
         transmute(
           Country,
@@ -435,22 +525,45 @@ library(rlang)
         )
       
       modified_data <- forecast_data %>%
-        left_join(start_levels,
-                  by = c("Country", "End_Estimation_Set")) %>%
-        group_by(Country, End_Estimation_Set) %>%
-        arrange(Horizon, .by_group = TRUE) %>%
-        mutate(
-          growth_factor = exp(Forecast_Growth_logdiff / 100),
-          Forecast_Nominal_GDP = start_level * cumprod(growth_factor)
-        ) %>%
-        ungroup() %>%
-        select(-start_level, -growth_factor)
+        left_join(start_levels, by = c("Country", "End_Estimation_Set"))
+      
+      # Mean path (existing behavior)
+      modified_data <- add_one_nominal_path(
+        df         = modified_data,
+        start_col  = "start_level",
+        group_cols = c("Country", "End_Estimation_Set"),
+        logdiff_col= "Forecast_Growth_logdiff",
+        out_col    = "Forecast_Nominal_GDP"
+      )
+      
+      # Optional quantile paths
+      if (isTRUE(add_quantiles)) {
+        # only compute those that exist
+        if (q_cols[1] %in% names(modified_data)) {
+          modified_data <- add_one_nominal_path(
+            df          = modified_data,
+            start_col   = "start_level",
+            group_cols  = c("Country", "End_Estimation_Set"),
+            logdiff_col = q_cols[1],
+            out_col     = "Forecast_Nominal_GDP_q10"
+          )
+        }
+        if (q_cols[2] %in% names(modified_data)) {
+          modified_data <- add_one_nominal_path(
+            df          = modified_data,
+            start_col   = "start_level",
+            group_cols  = c("Country", "End_Estimation_Set"),
+            logdiff_col = q_cols[2],
+            out_col     = "Forecast_Nominal_GDP_q90"
+          )
+        }
+      }
+      
+      modified_data <- modified_data %>%
+        select(-start_level)
       
     } else {
-      ## ----- Case 2: no End_Estimation_Set -----
-      # Horizon == 1 starts at quarter Q1, origin quarter is Q0 = Q1 - 0.25.
-      # In general: Q0 = Forecasted_Quarter - Horizon * 0.25
-      
+      # ----- Case 2: no End_Estimation_Set -----
       start_levels <- observed_data %>%
         transmute(
           Country,
@@ -459,19 +572,42 @@ library(rlang)
         )
       
       modified_data <- forecast_data %>%
-        mutate(
-          last_observed_quarter = Forecasted_Quarter - Horizon * 0.25
-        ) %>%
-        left_join(start_levels,
-                  by = c("Country", "last_observed_quarter")) %>%
-        group_by(Country, last_observed_quarter) %>%
-        arrange(Horizon, .by_group = TRUE) %>%
-        mutate(
-          growth_factor = exp(Forecast_Growth_logdiff / 100),
-          Forecast_Nominal_GDP = start_level * cumprod(growth_factor)
-        ) %>%
-        ungroup() %>%
-        select(-start_level, -growth_factor)
+        mutate(last_observed_quarter = Forecasted_Quarter - Horizon * 0.25) %>%
+        left_join(start_levels, by = c("Country", "last_observed_quarter"))
+      
+      # Mean path (existing behavior)
+      modified_data <- add_one_nominal_path(
+        df         = modified_data,
+        start_col  = "start_level",
+        group_cols = c("Country", "last_observed_quarter"),
+        logdiff_col= "Forecast_Growth_logdiff",
+        out_col    = "Forecast_Nominal_GDP"
+      )
+      
+      # Optional quantile paths
+      if (isTRUE(add_quantiles)) {
+        if (q_cols[1] %in% names(modified_data)) {
+          modified_data <- add_one_nominal_path(
+            df          = modified_data,
+            start_col   = "start_level",
+            group_cols  = c("Country", "last_observed_quarter"),
+            logdiff_col = q_cols[1],
+            out_col     = "Forecast_Nominal_GDP_q10"
+          )
+        }
+        if (q_cols[2] %in% names(modified_data)) {
+          modified_data <- add_one_nominal_path(
+            df          = modified_data,
+            start_col   = "start_level",
+            group_cols  = c("Country", "last_observed_quarter"),
+            logdiff_col = q_cols[2],
+            out_col     = "Forecast_Nominal_GDP_q90"
+          )
+        }
+      }
+      
+      modified_data <- modified_data %>%
+        select(-start_level)
     }
     
     return(modified_data)
@@ -484,238 +620,220 @@ library(rlang)
   compute_eurozone_logdiff <- function(forecast_df,
                                        observed_df,
                                        MultiHorizonSets = TRUE,
-                                       euro_name = "Eurozone") {
+                                       euro_name = "Eurozone",
+                                       add_quantiles = FALSE,
+                                       q_nominal_cols = c("Forecast_Nominal_GDP_q10",
+                                                          "Forecast_Nominal_GDP_q90")) {
     
     # Observed data for Eurozone only
     obs_euro <- observed_df %>%
-      filter(Country == euro_name) %>%
-      select(Country, Quarter, Nominal_GDP_seas)
+      dplyr::filter(.data$Country == euro_name) %>%
+      dplyr::select(.data$Country, .data$Quarter, .data$Nominal_GDP_seas)
     
-    if (MultiHorizonSets) {
-      # ---- Case 1: dataset has End_Estimation_Set ----
+    has_q10_nom <- q_nominal_cols[1] %in% names(forecast_df)
+    has_q90_nom <- q_nominal_cols[2] %in% names(forecast_df)
+    
+    if (isTRUE(MultiHorizonSets)) {
       
       euro_forecast <- forecast_df %>%
-        filter(Country == euro_name) %>%
-        # attach observed nominal GDP at End_Estimation_Set quarter
-        left_join(
+        dplyr::filter(.data$Country == euro_name) %>%
+        dplyr::left_join(
           obs_euro,
-          by = c("Country", "End_Estimation_Set" = "Quarter"),
-          suffix = c("", ".obs")   # keep only forecast version
+          by = c("Country", "End_Estimation_Set" = "Quarter")
         ) %>%
-        arrange(End_Estimation_Set, Horizon) %>%
-        group_by(Country, End_Estimation_Set) %>%
-        mutate(
+        dplyr::arrange(.data$End_Estimation_Set, .data$Horizon) %>%
+        dplyr::group_by(.data$Country, .data$End_Estimation_Set) %>%
+        dplyr::mutate(
           base_nominal = dplyr::case_when(
-            Horizon == 1L ~ Nominal_GDP_seas,          # use observed value
-            TRUE         ~ lag(Forecast_Nominal_GDP)   # use previous forecast
+            .data$Horizon == 1L ~ .data$Nominal_GDP_seas,
+            TRUE                ~ dplyr::lag(.data$Forecast_Nominal_GDP)
           ),
           Forecast_Growth_logdiff =
-            (log(Forecast_Nominal_GDP) - log(base_nominal))*100
-        ) %>%
-        select(-Nominal_GDP_seas, -base_nominal) %>%
-        ungroup()
+            (log(.data$Forecast_Nominal_GDP) - log(.data$base_nominal)) * 100
+        )
+      
+      if (isTRUE(add_quantiles) && isTRUE(has_q10_nom)) {
+        euro_forecast <- euro_forecast %>%
+          dplyr::mutate(
+            base_nominal_q10 = dplyr::case_when(
+              .data$Horizon == 1L ~ .data$Nominal_GDP_seas,
+              TRUE ~ dplyr::lag(.data[[q_nominal_cols[1]]])
+            ),
+            Forecast_Growth_logdiff_q10 =
+              (log(.data[[q_nominal_cols[1]]]) - log(.data$base_nominal_q10)) * 100
+          )
+      }
+      
+      if (isTRUE(add_quantiles) && isTRUE(has_q90_nom)) {
+        euro_forecast <- euro_forecast %>%
+          dplyr::mutate(
+            base_nominal_q90 = dplyr::case_when(
+              .data$Horizon == 1L ~ .data$Nominal_GDP_seas,
+              TRUE ~ dplyr::lag(.data[[q_nominal_cols[2]]])
+            ),
+            Forecast_Growth_logdiff_q90 =
+              (log(.data[[q_nominal_cols[2]]]) - log(.data$base_nominal_q90)) * 100
+          )
+      }
+      
+      euro_forecast <- euro_forecast %>%
+        dplyr::ungroup() %>%
+        dplyr::select(
+          -dplyr::any_of(c("Nominal_GDP_seas", "base_nominal",
+                           "base_nominal_q10", "base_nominal_q90"))
+        )
       
     } else {
-      # ---- Case 2: dataset has last_observed_quarter ----
       
       euro_forecast <- forecast_df %>%
-        filter(Country == euro_name) %>%
-        # attach observed nominal GDP at last_observed_quarter
-        left_join(
+        dplyr::filter(.data$Country == euro_name) %>%
+        dplyr::left_join(
           obs_euro,
-          by = c("Country", "last_observed_quarter" = "Quarter"),
-          suffix = c("", ".obs")   # keep only forecast version
+          by = c("Country", "last_observed_quarter" = "Quarter")
         ) %>%
-        arrange(last_observed_quarter, Horizon) %>%
-        group_by(Country, last_observed_quarter) %>%
-        mutate(
+        dplyr::arrange(.data$last_observed_quarter, .data$Horizon) %>%
+        dplyr::group_by(.data$Country, .data$last_observed_quarter) %>%
+        dplyr::mutate(
           base_nominal = dplyr::case_when(
-            Horizon == 1L ~ Nominal_GDP_seas,
-            TRUE         ~ lag(Forecast_Nominal_GDP)
+            .data$Horizon == 1L ~ .data$Nominal_GDP_seas,
+            TRUE                ~ dplyr::lag(.data$Forecast_Nominal_GDP)
           ),
           Forecast_Growth_logdiff =
-            (log(Forecast_Nominal_GDP) - log(base_nominal))*100
-        ) %>%
-        select(-Nominal_GDP_seas, -base_nominal) %>%
-        ungroup()
+            (log(.data$Forecast_Nominal_GDP) - log(.data$base_nominal)) * 100
+        )
+      
+      if (isTRUE(add_quantiles) && isTRUE(has_q10_nom)) {
+        euro_forecast <- euro_forecast %>%
+          dplyr::mutate(
+            base_nominal_q10 = dplyr::case_when(
+              .data$Horizon == 1L ~ .data$Nominal_GDP_seas,
+              TRUE ~ dplyr::lag(.data[[q_nominal_cols[1]]])
+            ),
+            Forecast_Growth_logdiff_q10 =
+              (log(.data[[q_nominal_cols[1]]]) - log(.data$base_nominal_q10)) * 100
+          )
+      }
+      
+      if (isTRUE(add_quantiles) && isTRUE(has_q90_nom)) {
+        euro_forecast <- euro_forecast %>%
+          dplyr::mutate(
+            base_nominal_q90 = dplyr::case_when(
+              .data$Horizon == 1L ~ .data$Nominal_GDP_seas,
+              TRUE ~ dplyr::lag(.data[[q_nominal_cols[2]]])
+            ),
+            Forecast_Growth_logdiff_q90 =
+              (log(.data[[q_nominal_cols[2]]]) - log(.data$base_nominal_q90)) * 100
+          )
+      }
+      
+      euro_forecast <- euro_forecast %>%
+        dplyr::ungroup() %>%
+        dplyr::select(
+          -dplyr::any_of(c("Nominal_GDP_seas", "base_nominal",
+                           "base_nominal_q10", "base_nominal_q90"))
+        )
     }
     
-    # Put Eurozone back with the other countries and return
+    # Put Eurozone back with the other countries and keep original column order
     forecast_updated <- forecast_df %>%
-      filter(Country != euro_name) %>%
-      bind_rows(euro_forecast) %>%
-      # optional: keep original column order
-      select(all_of(names(forecast_df)))
+      dplyr::filter(.data$Country != euro_name) %>%
+      dplyr::bind_rows(euro_forecast) %>%
+      dplyr::select(dplyr::all_of(names(forecast_df)))
     
     return(forecast_updated)
   }
   
   
   
-  ######################## Compute annual growth################################
   
-  compute_annual_growth <- function(forecast_table_growth_countries,
-                                    Euro_Countries_GDP_Growth_Log,
-                                    rate_in_pourcent = TRUE) {
-    
-    # --- 1. Prepare forecast data ----
-    forecast_q <- forecast_table_growth_countries %>%
-      transmute(
-        Country,
-        quarter_num = Forecasted_Quarter,
-        year = floor(Forecasted_Quarter),
-        # Q1–Q4 from decimal part (.00, .25, .50, .75)
-        quarter = as.integer(round((Forecasted_Quarter - year) * 4)) + 1L,
-        growth = Forecast_Growth_rate,       # already in %
-        source = "forecast"
-      )
-    
-    # --- 2. Prepare observed data (only where forecast missing) ----
-    # First, same year/quarter breakdown
-    observed_q_all <- Euro_Countries_GDP_Growth_Log %>%
-      transmute(
-        Country,
-        quarter_num = Quarter,
-        year = floor(Quarter),
-        quarter = as.integer(round((Quarter - year) * 4)) + 1L,
-        growth = true_growth,
-        source = "observed"
-      )
-    
-    # We only care about years & countries that appear in the forecast table
-    years_of_interest <- unique(forecast_q$year)
-    countries_of_interest <- unique(forecast_q$Country)
-    
-    observed_q <- observed_q_all %>%
-      filter(year %in% years_of_interest,
-             Country %in% countries_of_interest)
-    
-    # Remove observed quarters that are already in the forecast data
-    # (forecast should override observed for the same country-quarter)
-    observed_q_missing <- observed_q %>%
-      anti_join(
-        forecast_q %>%
-          select(Country, year, quarter),
-        by = c("Country", "year", "quarter")
-      )
-    
-    # --- 3. Combine forecast and observed quarters ----
-    all_quarters <- bind_rows(forecast_q, observed_q_missing)
-    
-    # --- 4. Compute annual growth per Country-Year ----
-    annual_growth <- all_quarters %>%
-      group_by(Country, year) %>%
-      # we expect 4 quarters; if not, result will be NA
-      summarise(
-        n_quarters = n(),
-        annual_growth = {
-          if (n_quarters < 4) {
-            NA_real_
-          } else {
-            if (rate_in_pourcent) {
-              # inputs in %, output in %
-              factors <- 1 + growth / 100
-              (prod(factors, na.rm = TRUE) - 1) * 100
-            } else {
-              # inputs in rates, output in rate
-              factors <- 1 + growth
-              prod(factors, na.rm = TRUE) - 1
-            }
-          }
-        },
-        .groups = "drop"
-      )
-    
-    # --- 5. Pivot to wide format: one column per year ----
-    result_wide <- annual_growth %>%
-      select(-n_quarters) %>%
-      # year as character so column names are "2025", "2026", ...
-      mutate(year = as.character(year)) %>%
-      pivot_wider(
-        names_from = year,
-        values_from = annual_growth
-      ) %>%
-      arrange(Country)
-    
-    return(result_wide)
-  }
   
 
-  
-  
-  
   ######################## compute_annual_nominal GDP #################
   
   compute_annual_nominal <- function(forecast_table_growth_countries,
-                                          Euro_Countries_GDP_Growth_Log) {
-    # 1) Forecast quarters: Country–Quarter–Year–Q_index–Nominal_Forecast
-    forecast_q <- forecast_table_growth_countries %>%
-      transmute(
-        Country,
-        Quarter = Forecasted_Quarter,
-        year    = floor(Forecasted_Quarter),
-        quarter = as.integer(round((Forecasted_Quarter - year) * 4)) + 1L,
-        nominal_fc = Forecast_Nominal_GDP
-      )
+                                     Euro_Countries_GDP_Growth_Log) {
     
-    # Years that have at least one forecast (per country)
-    forecast_years <- forecast_q %>%
-      distinct(Country, year)
-    
-    # 2) Observed quarters for the same country–years
-    observed_q <- Euro_Countries_GDP_Growth_Log %>%
-      transmute(
-        Country,
-        Quarter,
-        year    = floor(Quarter),
-        quarter = as.integer(round((Quarter - year) * 4)) + 1L,
-        nominal_obs = Nominal_GDP_seas
-      ) %>%
-      semi_join(forecast_years, by = c("Country", "year"))
-    
-    # 3) Combine forecast + observed and choose "best" nominal per quarter
-    all_quarters <- observed_q %>%
-      full_join(
-        forecast_q,
-        by = c("Country", "Quarter", "year", "quarter")
-      ) %>%
-      mutate(
-        chosen_nominal = dplyr::case_when(
-          !is.na(nominal_fc) ~ nominal_fc,       # use forecast if available
-          TRUE               ~ nominal_obs       # otherwise fallback to observed
+    # Helper to build annual nominal table from one quarterly nominal column
+    build_one_annual <- function(fc_col, out_type) {
+      
+      # 1) Forecast quarters: Country–Quarter–Year–Q_index–Nominal_Forecast
+      forecast_q <- forecast_table_growth_countries %>%
+        transmute(
+          Country,
+          Quarter = Forecasted_Quarter,
+          year    = floor(Forecasted_Quarter),
+          quarter = as.integer(round((Forecasted_Quarter - year) * 4)) + 1L,
+          nominal_fc = .data[[fc_col]]
         )
-      )
+      
+      # Years that have at least one forecast (per country)
+      forecast_years <- forecast_q %>%
+        distinct(Country, year)
+      
+      # 2) Observed quarters for the same country–years
+      observed_q <- Euro_Countries_GDP_Growth_Log %>%
+        transmute(
+          Country,
+          Quarter,
+          year    = floor(Quarter),
+          quarter = as.integer(round((Quarter - year) * 4)) + 1L,
+          nominal_obs = Nominal_GDP_seas
+        ) %>%
+        semi_join(forecast_years, by = c("Country", "year"))
+      
+      # 3) Combine forecast + observed and choose nominal per quarter
+      all_quarters <- observed_q %>%
+        full_join(
+          forecast_q,
+          by = c("Country", "Quarter", "year", "quarter")
+        ) %>%
+        mutate(
+          chosen_nominal = dplyr::case_when(
+            !is.na(nominal_fc) ~ nominal_fc,  # use forecast if available
+            TRUE               ~ nominal_obs  # otherwise fallback to observed
+          )
+        )
+      
+      # 4) Compute annual nominal GDP (only if 4 quarters available)
+      annual_nominal <- all_quarters %>%
+        group_by(Country, year) %>%
+        summarise(
+          n_quarters     = sum(!is.na(chosen_nominal)),
+          annual_nominal = ifelse(
+            n_quarters < 4,
+            NA_real_,
+            sum(chosen_nominal, na.rm = TRUE)
+          ),
+          .groups = "drop"
+        )
+      
+      # 5) Pivot wide + add type
+      annual_nominal %>%
+        select(-n_quarters) %>%
+        mutate(year = as.character(year)) %>%
+        pivot_wider(
+          id_cols     = Country,
+          names_from  = year,
+          values_from = annual_nominal
+        ) %>%
+        mutate(type = out_type) %>%
+        relocate(type, .after = Country) %>%
+        arrange(Country)
+    }
     
-    # 4) Compute annual nominal GDP (only if 4 quarters available)
-    annual_nominal <- all_quarters %>%
-      group_by(Country, year) %>%
-      summarise(
-        n_quarters     = sum(!is.na(chosen_nominal)),
-        annual_nominal = ifelse(
-          n_quarters < 4,
-          NA_real_,
-          sum(chosen_nominal, na.rm = TRUE)
-        ),
-        .groups = "drop"
-      )
+    # Mean + quantiles (assumed present)
+    annual_mean <- build_one_annual("Forecast_Nominal_GDP", "nominal_gdp")
+    annual_q10  <- build_one_annual("Forecast_Nominal_GDP_q10", "nominal_gdp_q10")
+    annual_q90  <- build_one_annual("Forecast_Nominal_GDP_q90", "nominal_gdp_q90")
     
-    # 5) Keep only forecast years (already ensured by semi_join), pivot wide
-    annual_nominal_wide <- annual_nominal %>%
-      select(-n_quarters) %>%
-      mutate(year = as.character(year)) %>%
-      pivot_wider(
-        id_cols    = Country,
-        names_from = year,
-        values_from = annual_nominal
-      ) %>%
-      mutate(type = "nominal_gdp") %>%
-      relocate(type, .after = Country) %>%
-      arrange(Country)
+    # Stack them (same format as your annual tables)
+    annual_nominal_all <- bind_rows(annual_mean, annual_q10, annual_q90) %>%
+      arrange(Country, type)
     
-    return(annual_nominal_wide)
+    return(annual_nominal_all)
   }
   
-  ######################## Compute annual forecast nominal growth ##############
+  ######################## Compute annual forecast growth ##############
   
   
   compute_growth <- function(annual_growth_forecast,
@@ -724,78 +842,90 @@ library(rlang)
     
     which <- match.arg(which)
     
-    # choose the level & growth type depending on the mode
     if (which == "nominal") {
-      level_type   <- "nominal_gdp"
-      growth_type  <- "nominal_growth"
-    } else { # "real"
-      level_type   <- "real_gdp"
-      growth_type  <- "real_growth"
+      level_types  <- c("nominal_gdp", "nominal_gdp_q10", "nominal_gdp_q90")
+      growth_types <- c("nominal_growth", "nominal_growth_q10", "nominal_growth_q90")
+    } else {
+      level_types  <- c("real_gdp", "real_gdp_q10", "real_gdp_q90")
+      growth_types <- c("real_growth", "real_growth_q10", "real_growth_q90")
     }
     
-    # 1) Identify year columns in the forecast table
+    # Identify year columns in the forecast table
     year_cols_fc <- grep("^[0-9]{4}$", names(annual_growth_forecast), value = TRUE)
-    
-    # 2) Long format: forecast levels (nominal_gdp or real_gdp)
-    fc_long <- annual_growth_forecast %>%
-      dplyr::filter(type == level_type) %>%
-      tidyr::pivot_longer(
-        cols      = dplyr::all_of(year_cols_fc),
-        names_to  = "year",
-        values_to = "level_fc"
-      )
-    
-    # 3) Long format: observed levels (all years available)
     year_cols_obs <- grep("^[0-9]{4}$", names(annual_growth_observed), value = TRUE)
     
-    obs_long <- annual_growth_observed %>%
-      dplyr::filter(type == level_type) %>%
-      tidyr::pivot_longer(
-        cols      = dplyr::all_of(year_cols_obs),
-        names_to  = "year",
-        values_to = "level_obs"
-      )
+    # Helper: compute growth for one (level_type -> growth_type)
+    compute_one <- function(level_type, growth_type) {
+      
+      # Forecast levels (long) - these are the levels you want to use for growth
+      fc_long <- annual_growth_forecast %>%
+        dplyr::filter(type == level_type) %>%
+        tidyr::pivot_longer(
+          cols      = dplyr::all_of(year_cols_fc),
+          names_to  = "year",
+          values_to = "level_fc"
+        )
+      
+      if (nrow(fc_long) == 0) return(NULL)
+      
+      years_forecast <- sort(unique(as.integer(fc_long$year)))
+      base_years     <- unique(years_forecast - 1L)
+      
+      # Observed MEAN levels (nominal_gdp or real_gdp) used as base for year-1
+      obs_mean_long <- annual_growth_observed %>%
+        dplyr::filter(type == if (which == "nominal") "nominal_gdp" else "real_gdp") %>%
+        tidyr::pivot_longer(
+          cols      = dplyr::all_of(year_cols_obs),
+          names_to  = "year",
+          values_to = "level_obs_mean"
+        ) %>%
+        dplyr::mutate(year_int = as.integer(year)) %>%
+        dplyr::filter(year_int %in% base_years) %>%
+        dplyr::select(Country, year = year_int, level = level_obs_mean)
+      
+      # Build the level series used for growth:
+      # - include base year from observed mean (needed for 2025 growth)
+      # - include forecast years from the chosen level_type (mean or quantile)
+      combined_levels <- fc_long %>%
+        dplyr::mutate(year = as.integer(year)) %>%
+        dplyr::transmute(Country, year, level = level_fc) %>%
+        dplyr::bind_rows(obs_mean_long) %>%
+        dplyr::arrange(Country, year) %>%
+        dplyr::distinct(Country, year, .keep_all = TRUE)
+      
+      # Compute YoY growth using levels (rate between nominals)
+      growth_long <- combined_levels %>%
+        dplyr::group_by(Country) %>%
+        dplyr::mutate(
+          level_prev = dplyr::lag(level),
+          growth = (level / level_prev - 1) * 100
+        ) %>%
+        dplyr::ungroup() %>%
+        dplyr::filter(year %in% years_forecast) %>%   # only keep forecast-year growth
+        dplyr::mutate(year = as.character(year)) %>%
+        dplyr::select(Country, year, growth)
+      
+      growth_wide <- growth_long %>%
+        dplyr::mutate(type = growth_type) %>%
+        tidyr::pivot_wider(
+          id_cols     = c(Country, type),
+          names_from  = year,
+          values_from = growth
+        )
+      
+      return(growth_wide)
+    }
     
-    # 4) Combine observed + forecast levels (forecast overrides observed)
-    combined_levels <- obs_long %>%
-      dplyr::select(Country, year, level_obs) %>%
-      dplyr::full_join(
-        fc_long %>% dplyr::select(Country, year, level_fc),
-        by = c("Country", "year")
-      ) %>%
-      dplyr::mutate(
-        level = dplyr::if_else(!is.na(level_fc), level_fc, level_obs)
-      ) %>%
-      dplyr::select(Country, year, level)
+    growth_rows <- dplyr::bind_rows(
+      compute_one(level_types[1], growth_types[1]),
+      compute_one(level_types[2], growth_types[2]),
+      compute_one(level_types[3], growth_types[3])
+    )
     
-    # 5) Compute growth from combined levels, then keep only forecast years
-    years_forecast <- unique(fc_long$year)
-    
-    growth_long <- combined_levels %>%
-      dplyr::mutate(year_num = as.integer(year)) %>%
-      dplyr::arrange(Country, year_num) %>%
-      dplyr::group_by(Country) %>%
-      dplyr::mutate(
-        level_prev = dplyr::lag(level),
-        growth = (level / level_prev - 1) * 100
-      ) %>%
-      dplyr::ungroup() %>%
-      dplyr::filter(year %in% years_forecast) %>%
-      dplyr::select(Country, year, growth)
-    
-    # 6) Put growth in wide format, one row per country
-    growth_wide <- growth_long %>%
-      dplyr::mutate(type = growth_type) %>%
-      tidyr::pivot_wider(
-        id_cols    = c(Country, type),
-        names_from = year,
-        values_from = growth
-      )
-    
-    # 7) Optional: drop old rows of that growth type to avoid duplicates
+    # Drop any old versions of these growth types to avoid duplicates, then bind back
     out <- annual_growth_forecast %>%
-      dplyr::filter(type != growth_type) %>%
-      dplyr::bind_rows(growth_wide) %>%
+      dplyr::filter(!(type %in% growth_types)) %>%
+      dplyr::bind_rows(growth_rows) %>%
       dplyr::arrange(Country, type)
     
     return(out)
@@ -811,29 +941,33 @@ library(rlang)
   add_deflator_forecast_to_annual <- function(annual_growth_forecast,
                                               annual_deflator_forecast) {
     
-    # 1) Convert annual_deflator_forecast to long form
     df_long <- annual_deflator_forecast %>%
-      pivot_longer(
+      tidyr::pivot_longer(
         cols      = -Country,
-        names_to  = "year",
+        names_to  = "year_raw",
         values_to = "value"
       ) %>%
-      mutate(
-        type = "deflator"
-      )
+      dplyr::mutate(
+        type = dplyr::case_when(
+          grepl("_q10$", year_raw) ~ "deflator_q10",
+          grepl("_q90$", year_raw) ~ "deflator_q90",
+          TRUE                     ~ "deflator"
+        ),
+        # IMPORTANT: put quantiles under the same year columns (2025, 2026, 2027)
+        year = gsub("_(q10|q90)$", "", year_raw)
+      ) %>%
+      dplyr::select(Country, type, year, value)
     
-    # 2) Convert back to wide with type + years (same structure as annual_growth_forecast)
     deflator_rows <- df_long %>%
-      pivot_wider(
-        id_cols    = c(Country, type),
-        names_from = year,
+      tidyr::pivot_wider(
+        id_cols     = c(Country, type),
+        names_from  = year,
         values_from = value
       )
     
-    # 3) Bind the new rows to the forecast table
     out <- annual_growth_forecast %>%
-      bind_rows(deflator_rows) %>%
-      arrange(Country, type)
+      dplyr::bind_rows(deflator_rows) %>%
+      dplyr::arrange(Country, type)
     
     return(out)
   }
@@ -1183,6 +1317,31 @@ library(rlang)
     
     return(data)
   }
+  
+  ######################## Compute the forecast quantiles ######################
+  
+  compute_forecast_quantiles <- function(fc_object,
+                                         probs = c(0.05, 0.95)) {
+    
+
+    mu <- fc_object$forecast_values
+    sd <- fc_object$forecast_SD
+    
+
+    
+    # Gaussian quantiles
+    z <- stats::qnorm(probs)
+    
+    quantiles <- sapply(z, function(z_i) {
+      mu + z_i * sd
+    })
+    
+    colnames(quantiles) <- paste0("q", probs * 100)
+    
+    return(as.data.frame(quantiles))
+  }
+  
+  
   
 ################################################################################
 # Function test the models
@@ -1747,4 +1906,712 @@ library(rlang)
   
   
   
+  
+  ######################## compute the forecast path at each period ############
+  
+  simulate_forecast_paths_tagged <- function(forecast_values,
+                                             forecast_SD,
+                                             loop = 10,
+                                             end_quarter,
+                                             country_name) {
+    
+    
+    
+    horizons <- seq_along(forecast_values)
+    H <- length(horizons)
+    
+    # Sim matrix: rows=draws, cols=horizons
+    sim_matrix <- sapply(horizons, function(h) {
+      stats::rnorm(
+        n    = loop,
+        mean = forecast_values[h],
+        sd   = forecast_SD[h]
+      )
+    })
+    
+    # Build tidy df with metadata
+    sim_df <- data.frame(
+      Country            = country_name,
+      End_Estimation_Set = end_quarter,
+      Draw               = rep(seq_len(loop), times = H),
+      Horizon            = rep(horizons, each = loop),
+      Forecasted_Quarter = end_quarter + 0.25 * rep(horizons, each = loop),
+      Forecast           = as.vector(sim_matrix)
+    )
+    
+    return(sim_df)
+  }
+  ######################## Transform the log-diff paths into nominal ###########
+  
+  logdiff_sim_to_nominal <- function(sim_df, Euro_Countries_GDP_Growth_Log,
+                                     country_col = "Country",
+                                     end_col     = "End_Estimation_Set",
+                                     horizon_col = "Horizon",
+                                     draw_col    = "Draw",
+                                     forecast_col= "Forecast",
+                                     obs_level_col = "Nominal_GDP_seas",
+                                     obs_quarter_col = "Quarter") {
+    
+    
+    # --- 1) Build start levels: observed nominal GDP at the forecast origin ---
+    start_levels <- Euro_Countries_GDP_Growth_Log %>%
+      transmute(
+        Country = .data[[country_col]],
+        End_Estimation_Set = round(.data[[obs_quarter_col]], 2),
+        start_level = .data[[obs_level_col]]
+      )
+    
+    # --- 2) Prepare sim_df (round End_Estimation_Set to avoid float mismatches) ---
+    sim_df2 <- sim_df %>%
+      mutate(
+        End_Estimation_Set = round(.data[[end_col]], 2)
+      ) %>%
+      left_join(start_levels, by = c("Country", "End_Estimation_Set"))
+    
+    # Check: if start_level missing, you cannot build nominal levels
+    if (any(is.na(sim_df2$start_level))) {
+      bad <- sim_df2 %>%
+        filter(is.na(start_level)) %>%
+        distinct(Country, End_Estimation_Set)
+      stop("Missing start_level for some Country/End_Estimation_Set pairs. Example:\n",
+           paste0(capture.output(print(bad)), collapse = "\n"))
+    }
+    
+    # --- 3) Convert log-diff to growth factor and cumulate to get nominal levels ---
+    out <- sim_df2 %>%
+      arrange(.data[[country_col]], .data[[end_col]], .data[[draw_col]], .data[[horizon_col]]) %>%
+      group_by(.data[[country_col]], .data[[end_col]], .data[[draw_col]]) %>%
+      mutate(
+        growth_factor = exp(.data[[forecast_col]] / 100),            # from log-diff(%)
+        Forecast_Nominal_GDP = start_level * cumprod(growth_factor)  # level path
+      ) %>%
+      ungroup() %>%
+      # return "same structure" but forecast is nominal now:
+      mutate(!!forecast_col := Forecast_Nominal_GDP) %>%
+      select(-start_level, -growth_factor, -Forecast_Nominal_GDP)
+    
+    return(out)
+  }
+  ######################## Transform the paths forecast into eurozone paths ####
+  
+  add_eurozone_logdiff_to_simulated_path_all <- function(simulated_path_all,
+                                                         simulated_path_all_nominal,
+                                                         Euro_Countries_GDP_Growth_Log,
+                                                         countries_to_sum = c("France","Germany","Italy","Netherlands","Spain","Sum Small euro countries"),
+                                                         euro_name = "Eurozone") {
+    
+    # ----------------------------
+    # 0) Round to avoid float issues
+    # ----------------------------
+    sim_nom <- simulated_path_all_nominal %>%
+      mutate(
+        End_Estimation_Set = round(End_Estimation_Set, 2),
+        Forecasted_Quarter = round(Forecasted_Quarter, 2)
+      )
+    
+    sim_ld <- simulated_path_all %>%
+      mutate(
+        End_Estimation_Set = round(End_Estimation_Set, 2),
+        Forecasted_Quarter = round(Forecasted_Quarter, 2)
+      )
+    
+    # -----------------------------------------
+    # 1) Aggregate simulated Eurozone nominal
+    # -----------------------------------------
+    euro_nom <- sim_nom %>%
+      filter(Country %in% countries_to_sum) %>%
+      group_by(End_Estimation_Set, Forecasted_Quarter, Draw, Horizon) %>%
+      summarise(
+        euro_nominal = sum(Forecast, na.rm = TRUE),
+        .groups = "drop"
+      ) %>%
+      mutate(Country = euro_name) %>%
+      relocate(Country)
+    
+    # -------------------------------------------------------
+    # 2) Get observed Eurozone nominal at End_Estimation_Set
+    # -------------------------------------------------------
+    euro_start_levels <- Euro_Countries_GDP_Growth_Log %>%
+      filter(Country == euro_name) %>%
+      transmute(
+        Country = euro_name,
+        End_Estimation_Set = round(Quarter, 2),
+        start_level = Nominal_GDP_seas
+      )
+    
+    euro_nom <- euro_nom %>%
+      left_join(euro_start_levels, by = c("Country", "End_Estimation_Set"))
+    
+    if (any(is.na(euro_nom$start_level))) {
+      bad <- euro_nom %>% filter(is.na(start_level)) %>% distinct(End_Estimation_Set)
+      stop(
+        "Missing observed Eurozone Nominal_GDP_seas at some End_Estimation_Set. Example:\n",
+        paste0(capture.output(print(bad)), collapse = "\n")
+      )
+    }
+    
+    # -------------------------------------------------------
+    # 3) Compute Eurozone simulated log-diff
+    #     Horizon==1: base = observed start_level
+    #     Horizon>1: base = lag(euro_nominal) within (End, Draw)
+    # -------------------------------------------------------
+    euro_logdiff <- euro_nom %>%
+      arrange(End_Estimation_Set, Draw, Horizon) %>%
+      group_by(End_Estimation_Set, Draw) %>%
+      mutate(
+        base_nominal = dplyr::case_when(
+          Horizon == 1L ~ start_level,
+          TRUE          ~ dplyr::lag(euro_nominal)
+        ),
+        Forecast = 100 * (log(euro_nominal) - log(base_nominal))  # <-- log-diff in %
+      ) %>%
+      ungroup() %>%
+      select(Country, End_Estimation_Set, Forecasted_Quarter, Draw, Horizon, Forecast)
+    
+    # -------------------------------------------------------
+    # 4) Append Eurozone rows to simulated_path_all
+    #     Ensure same columns (add missing columns as NA)
+    # -------------------------------------------------------
+    # Add any columns present in simulated_path_all but missing in euro_logdiff
+    missing_in_euro <- setdiff(names(sim_ld), names(euro_logdiff))
+    if (length(missing_in_euro) > 0) euro_logdiff[missing_in_euro] <- NA
+    
+    # Add any columns present in euro_logdiff but missing in simulated_path_all
+    missing_in_sim <- setdiff(names(euro_logdiff), names(sim_ld))
+    if (length(missing_in_sim) > 0) sim_ld[missing_in_sim] <- NA
+    
+    # Reorder euro columns to match simulated_path_all
+    euro_logdiff <- euro_logdiff[, names(sim_ld), drop = FALSE]
+    
+    out <- dplyr::bind_rows(sim_ld, euro_logdiff)
+    
+    return(out)
+  }
+  
+  
+  
+  ######################## Compuation if predictive variance of countries ######
+  
+  compute_predictive_variance_from_draws <- function(simulated_path_all,
+                                                     country_col  = "Country",
+                                                     end_col      = "End_Estimation_Set",
+                                                     horizon_col  = "Horizon",
+                                                     draw_col     = "Draw",
+                                                     forecast_col = "Forecast") {
+    
+    out <- simulated_path_all %>%
+      group_by(
+        .data[[country_col]],
+        .data[[end_col]],
+        .data[[horizon_col]]
+      ) %>%
+      summarise(
+        n_draws_used = sum(!is.na(.data[[forecast_col]])),
+        
+        # Empirical predictive moments from draws
+        forecast_mean = ifelse(n_draws_used >= 1,
+                               mean(.data[[forecast_col]], na.rm = TRUE),
+                               NA_real_),
+        forecast_variance = ifelse(n_draws_used >= 2,
+                                   var(.data[[forecast_col]], na.rm = TRUE),
+                                   NA_real_),
+        forecast_sd = ifelse(n_draws_used >= 2,
+                             sd(.data[[forecast_col]], na.rm = TRUE),
+                             NA_real_),
+        
+        
+        .groups = "drop"
+      ) %>%
+      arrange(.data[[country_col]], .data[[end_col]], .data[[horizon_col]])
+    
+    return(out)
+  }
+  
+  ######################## Compute the PIT and Berkowitz joint test ############
+  
+  add_berkowitz_test <- function(results_table,
+                                 pred_var_table,
+                                 Euro_Countries_GDP_Growth_Log,
+                                 logdiff_to_train_on = "gdp_growth_log_wins_001",
+                                 country = "Eurozone",
+                                 pit_clip = 1e-6) {
+  
+    
+    # --- 1) Build the (t,h) dataset: predictive moments + realized outcome ----
+    pv <- pred_var_table %>%
+      dplyr::filter(.data$Country == country) %>%
+      dplyr::mutate(
+        End_Estimation_Set = round(.data$End_Estimation_Set, 2),
+        Forecasted_Quarter = round(.data$End_Estimation_Set + 0.25 * .data$Horizon, 2)
+      )
+    
+    obs <- Euro_Countries_GDP_Growth_Log %>%
+      dplyr::filter(.data$Country == country) %>%
+      dplyr::transmute(
+        Country = .data$Country,
+        Forecasted_Quarter = round(.data$Quarter, 2),
+        realized = .data[[logdiff_to_train_on]]
+      )
+    
+    df <- pv %>%
+      dplyr::left_join(obs, by = c("Country", "Forecasted_Quarter"))
+    
+    # Basic sanity checks (you said no NA, but better to fail loudly if mismatch)
+    if (any(is.na(df$realized))) {
+      bad <- df %>% dplyr::filter(is.na(realized)) %>%
+        dplyr::distinct(End_Estimation_Set, Horizon, Forecasted_Quarter)
+      stop("Some realized values could not be matched in Euro_Countries_GDP_Growth_Log.\n",
+           paste0(capture.output(print(bad)), collapse = "\n"))
+    }
+    if (any(df$forecast_sd <= 0 | is.na(df$forecast_sd))) {
+      stop("forecast_sd must be > 0 for Berkowitz (needed for PIT and qnorm).")
+    }
+    
+    # --- 2) Compute PIT and z = qnorm(PIT) ----
+    df <- df %>%
+      dplyr::mutate(
+        pit_raw = stats::pnorm((realized - forecast_mean) / forecast_sd),
+        pit     = pmin(pmax(pit_raw, pit_clip), 1 - pit_clip),
+        z       = stats::qnorm(pit)
+      )
+    
+    
+    # --- Diagnostics (after PIT, before Berkowitz LR) ----
+    cat("[Berkowitz] PIT raw:  min=", min(df$pit_raw, na.rm=TRUE),
+        " max=", max(df$pit_raw, na.rm=TRUE), "\n")
+    
+    cat("[Berkowitz] PIT raw extremes:  <=0:", sum(df$pit_raw <= 0, na.rm=TRUE),
+        " >=1:", sum(df$pit_raw >= 1, na.rm=TRUE), "\n")
+    
+    cat("[Berkowitz] PIT near extremes (raw):  <1e-6:", sum(df$pit_raw < 1e-6, na.rm=TRUE),
+        " >1-1e-6:", sum(df$pit_raw > 1 - 1e-6, na.rm=TRUE), "\n")
+    
+    cat("[Berkowitz] PIT clipped extremes:  ==clip:", sum(df$pit <= pit_clip, na.rm=TRUE),
+        " ==1-clip:", sum(df$pit >= 1 - pit_clip, na.rm=TRUE), "\n")
+    
+    cat("[Berkowitz] z infinities:", sum(!is.finite(df$z)), "\n")
+    
+    # --- 3) Berkowitz LR test per horizon ----
+    berkowitz_pval_by_h <- df %>%
+      dplyr::arrange(End_Estimation_Set) %>%
+      dplyr::group_by(Horizon) %>%
+      dplyr::summarise(
+        Berkowitz_pvalue = {
+          zt <- z
+          n  <- length(zt)
+          
+          if (n < 5) {
+            NA_real_
+          } else {
+            # Restricted likelihood
+            ll_restricted <- sum(stats::dnorm(zt, mean = 0, sd = 1, log = TRUE))
+            
+            # Unrestricted AR(1)
+            y <- zt[-1]
+            x <- zt[-n]
+            fit <- stats::lm(y ~ x)
+            
+            resid <- stats::residuals(fit)
+            sigma2_hat <- mean(resid^2)
+            
+            ll_unrestricted <- sum(
+              stats::dnorm(resid, mean = 0, sd = sqrt(sigma2_hat), log = TRUE)
+            )
+            
+            LR   <- 2 * (ll_unrestricted - ll_restricted)
+            pval <- stats::pchisq(LR, df = 3, lower.tail = FALSE)
+            p_log <- stats::pchisq(LR, df = 3, lower.tail = FALSE, log.p = TRUE)
+            
+            cat("[Berkowitz] Horizon ", dplyr::first(Horizon),
+                " LR=", LR, " log(p)=", p_log, "\n")
+            
+            pval   
+          }
+        },
+        .groups = "drop"
+      )
+    
+    
+    # --- 4) Write into results_table ----
+    results_table <- as.data.frame(results_table)
+    
+    for (i in seq_len(nrow(berkowitz_pval_by_h))) {
+      h <- berkowitz_pval_by_h$Horizon[i]
+      rn <- as.character(h)
+      if (rn %in% rownames(results_table)) {
+        pval <- berkowitz_pval_by_h$Berkowitz_pvalue[i]
+        pval <- as.numeric(pval)
+        results_table[rn, "Berkowitz_pvalue"] <- round(pval, 8)
+      }
+    }
+    
+    return(results_table)
+  }
+  
+  ######################## Test de difference of the predictive density ########
+  
+  add_ag_density_test <- function(results_table,
+                                  pred_var_table,
+                                  pred_var_table_bench,
+                                  Euro_Countries_GDP_Growth_Log,
+                                  country      = "Eurozone",
+                                  observed_col = "gdp_growth_log_wins_001",
+                                  # column names
+                                  country_col  = "Country",
+                                  end_col      = "End_Estimation_Set",
+                                  horizon_col  = "Horizon",
+                                  mean_col     = "forecast_mean",
+                                  var_col      = "forecast_variance",
+                                  obs_q_col    = "Quarter",
+                                  # behavior
+                                  two_sided    = TRUE,
+                                  verbose      = TRUE,
+                                  # treat "near zero variance" as zero
+                                  sd_epsilon   = 1e-10) {
+    
+    # ----------------------------
+    # Helper: Newey–West long-run variance (Bartlett)
+    # ----------------------------
+    nw_lrv <- function(x, lag) {
+      x <- as.numeric(x)
+      x <- x[is.finite(x)]
+      T <- length(x)
+      if (T <= 1L) return(NA_real_)
+      
+      x_c <- x - mean(x)
+      gamma0 <- sum(x_c^2) / T
+      if (lag <= 0L) return(gamma0)
+      
+      lrv <- gamma0
+      for (k in 1:lag) {
+        gamma_k <- sum(x_c[(k + 1):T] * x_c[1:(T - k)]) / T
+        w <- 1 - k / (lag + 1)
+        lrv <- lrv + 2 * w * gamma_k
+      }
+      lrv
+    }
+    
+    msg <- function(...) if (isTRUE(verbose)) message(...)
+    
+    # ----------------------------
+    # 0) Build an integer quarter index everywhere to avoid float join problems
+    #     q_index = round(Quarter * 4)
+    #     target_index = end_index + Horizon
+    # ----------------------------
+    obs <- Euro_Countries_GDP_Growth_Log |>
+      dplyr::transmute(
+        Country  = .data[[country_col]],
+        q_index  = as.integer(round(.data[[obs_q_col]] * 4)),
+        y_obs    = as.numeric(.data[[observed_col]])
+      ) |>
+      dplyr::filter(Country == country)
+    
+    if (nrow(obs) == 0) {
+      stop("No observed data found for country='", country, "' in Euro_Countries_GDP_Growth_Log.")
+    }
+    
+    m <- pred_var_table |>
+      dplyr::filter(.data[[country_col]] == country) |>
+      dplyr::transmute(
+        Country    = .data[[country_col]],
+        end_index  = as.integer(round(.data[[end_col]] * 4)),
+        Horizon    = as.integer(.data[[horizon_col]]),
+        mu_m       = as.numeric(.data[[mean_col]]),
+        var_m      = as.numeric(.data[[var_col]])
+      )
+    
+    b <- pred_var_table_bench |>
+      dplyr::filter(.data[[country_col]] == country) |>
+      dplyr::transmute(
+        Country    = .data[[country_col]],
+        end_index  = as.integer(round(.data[[end_col]] * 4)),
+        Horizon    = as.integer(.data[[horizon_col]]),
+        mu_b       = as.numeric(.data[[mean_col]]),
+        var_b      = as.numeric(.data[[var_col]])
+      )
+    
+    if (nrow(m) == 0) stop("No rows found in pred_var_table for country='", country, "'.")
+    if (nrow(b) == 0) stop("No rows found in pred_var_table_bench for country='", country, "'.")
+    
+    # ----------------------------
+    # 1) Merge model and benchmark, attach realized y_{t+h}
+    # ----------------------------
+    df <- dplyr::inner_join(m, b, by = c("Country", "end_index", "Horizon")) |>
+      dplyr::mutate(
+        target_index = end_index + Horizon
+      ) |>
+      dplyr::left_join(obs, by = c("Country" = "Country", "target_index" = "q_index"))
+    
+    if (nrow(df) == 0) {
+      stop("After merging pred_var_table and pred_var_table_bench, there are 0 matching rows. ",
+           "Check keys (Country, End_Estimation_Set, Horizon).")
+    }
+    
+    # quick global diagnostics
+    if (isTRUE(verbose)) {
+      total_rows <- nrow(df)
+      n_yobs     <- sum(is.finite(df$y_obs))
+      msg("[AG] Merged rows: ", total_rows, " | with observed y: ", n_yobs,
+          " | missing y: ", total_rows - n_yobs)
+    }
+    
+    # ----------------------------
+    # 2) Compute log predictive densities (Gaussian) and differential d_t
+    # ----------------------------
+    df <- df |>
+      dplyr::mutate(
+        sd_m = dplyr::if_else(is.finite(var_m) & var_m > 0, sqrt(var_m), NA_real_),
+        sd_b = dplyr::if_else(is.finite(var_b) & var_b > 0, sqrt(var_b), NA_real_),
+        
+        logf_m = dplyr::if_else(
+          is.finite(y_obs) & is.finite(mu_m) & is.finite(sd_m) & sd_m > 0,
+          stats::dnorm(y_obs, mean = mu_m, sd = sd_m, log = TRUE),
+          NA_real_
+        ),
+        logf_b = dplyr::if_else(
+          is.finite(y_obs) & is.finite(mu_b) & is.finite(sd_b) & sd_b > 0,
+          stats::dnorm(y_obs, mean = mu_b, sd = sd_b, log = TRUE),
+          NA_real_
+        ),
+        
+        d_t = logf_m - logf_b
+      )
+    
+    # ----------------------------
+    # 3) Horizon-by-horizon: mean diff + HAC test (two-sided)
+    # ----------------------------
+    horizons <- sort(unique(df$Horizon))
+    ag_out <- data.frame(
+      Horizon         = horizons,
+      AG_mean_logdiff = NA_real_,
+      AG_pvalue       = NA_real_,
+      stringsAsFactors = FALSE
+    )
+    
+    for (h in horizons) {
+      d_vec_all <- df$d_t[df$Horizon == h]
+      d_vec <- d_vec_all[is.finite(d_vec_all)]
+      T_h <- length(d_vec)
+      
+      # mean (if any)
+      if (T_h >= 1) ag_out$AG_mean_logdiff[ag_out$Horizon == h] <- mean(d_vec)
+      
+      # detailed reasons for NA p-values
+      if (T_h < 2) {
+        msg("[AG] Horizon ", h, ": AG_pvalue = NA (valid d_t count < 2). ",
+            "Valid=", T_h, " | Total=", sum(df$Horizon == h))
+        next
+      }
+      
+      sd_dt <- stats::sd(d_vec)
+      if (!is.finite(sd_dt) || sd_dt <= sd_epsilon) {
+        msg("[AG] Horizon ", h, ": AG_pvalue = NA (d_t variance ~ 0). ",
+            "sd(d_t)=", signif(sd_dt, 6), " | mean(d_t)=", signif(mean(d_vec), 6),
+            " | Valid=", T_h)
+        next
+      }
+      
+      # HAC lag: h-1 but cannot exceed T_h-1
+      lag_h <- min(max(h - 1L, 0L), T_h - 1L)
+      lrv_h <- nw_lrv(d_vec, lag = lag_h)
+      
+      if (!is.finite(lrv_h) || lrv_h <= 0) {
+        msg("[AG] Horizon ", h, ": AG_pvalue = NA (HAC long-run variance not computable). ",
+            "lag=", lag_h, " | lrv=", signif(lrv_h, 6), " | Valid=", T_h)
+        next
+      }
+      
+      se_mean <- sqrt(lrv_h / T_h)
+      if (!is.finite(se_mean) || se_mean <= 0) {
+        msg("[AG] Horizon ", h, ": AG_pvalue = NA (standard error not computable). ",
+            "se_mean=", signif(se_mean, 6), " | Valid=", T_h)
+        next
+      }
+      
+      stat <- mean(d_vec) / se_mean
+      
+      pval <- if (isTRUE(two_sided)) {
+        2 * (1 - stats::pnorm(abs(stat)))
+      } else {
+        # one-sided: alternative mean(d_vec) > 0 (model better)
+        1 - stats::pnorm(stat)
+      }
+      
+      ag_out$AG_pvalue[ag_out$Horizon == h] <- pval
+      
+      msg("[AG] Horizon ", h, ": mean=", signif(mean(d_vec), 6),
+          " | stat=", signif(stat, 6),
+          " | p=", signif(pval, 6),
+          " | lag=", lag_h,
+          " | Valid=", T_h)
+    }
+    
+    # ----------------------------
+    # 4) Write into results_table (rownames are horizons)
+    # ----------------------------
+    results_table$AG_mean_logdiff <- NA_real_
+    results_table$AG_pvalue       <- NA_real_
+    
+    for (i in seq_len(nrow(ag_out))) {
+      h <- ag_out$Horizon[i]
+      rn <- as.character(h)
+      if (rn %in% rownames(results_table)) {
+        results_table[rn, "AG_mean_logdiff"] <- ag_out$AG_mean_logdiff[i]
+        results_table[rn, "AG_pvalue"]       <- ag_out$AG_pvalue[i]
+      } else {
+        msg("[AG] Note: Horizon ", h, " not found in results_table rownames. Skipping write.")
+      }
+    }
+    
+    # ----------------------------
+    # 5) Extra global warnings to help debugging
+    # ----------------------------
+    if (isTRUE(verbose)) {
+      # missing y
+      miss_y <- df |> dplyr::summarise(miss = sum(!is.finite(y_obs)), tot = dplyr::n())
+      if (miss_y$miss > 0) {
+        msg("[AG] Warning: ", miss_y$miss, "/", miss_y$tot,
+            " merged rows have missing observed y (likely outside sample or join mismatch).")
+      }
+      
+      # invalid variances
+      bad_vm <- sum(!is.finite(df$var_m) | df$var_m <= 0)
+      bad_vb <- sum(!is.finite(df$var_b) | df$var_b <= 0)
+      if (bad_vm > 0 || bad_vb > 0) {
+        msg("[AG] Warning: invalid predictive variances found. ",
+            "bad var_m=", bad_vm, " | bad var_b=", bad_vb,
+            ". These rows cannot produce log densities.")
+      }
+      
+      # how many d_t are usable overall
+      n_dt <- sum(is.finite(df$d_t))
+      msg("[AG] Overall usable d_t: ", n_dt, " / ", nrow(df))
+    }
+    
+    return(results_table)
+  }
+  
+  
+  
+  ################################################################################
+  # Function to do a plots
+  ################################################################################
+  
+  ######################## Plot the forecast and the intervals #################
+  
+  plot_real_growth_forecast_ci <- function(annual_growth_all,
+                                           annual_growth_observed,
+                                           country = "Eurozone",
+                                           year_from = 2022) {
+    stopifnot(is.data.frame(annual_growth_all), is.data.frame(annual_growth_observed))
+    stopifnot(all(c("Country", "type") %in% names(annual_growth_all)))
+    stopifnot(all(c("Country", "type") %in% names(annual_growth_observed)))
+    
+    # Helper: detect year columns like "2000", "2025", etc.
+    get_year_cols <- function(df) grep("^[0-9]{4}$", names(df), value = TRUE)
+    
+    obs_year_cols <- get_year_cols(annual_growth_observed)
+    fc_year_cols  <- get_year_cols(annual_growth_all)
+    
+    if (length(obs_year_cols) == 0) stop("annual_growth_observed has no year columns like '2024'.")
+    if (length(fc_year_cols)  == 0) stop("annual_growth_all has no year columns like '2025'.")
+    
+    # ---------- Observed series (blue): real_growth up to 2024 ----------
+    obs_long <- annual_growth_observed %>%
+      dplyr::filter(Country == country, type == "real_growth") %>%
+      tidyr::pivot_longer(cols = dplyr::all_of(obs_year_cols),
+                          names_to = "year", values_to = "value") %>%
+      dplyr::mutate(year = as.integer(year)) %>%
+      dplyr::filter(year >= year_from, year <= 2024) %>%
+      dplyr::arrange(year)
+    
+    if (nrow(obs_long) == 0) {
+      stop("No observed real_growth data found for the requested period/year_from.")
+    }
+    
+    last_obs_year <- max(obs_long$year, na.rm = TRUE)
+    
+    # ---------- Forecast series (red): real_growth + q10/q90 from annual_growth_all ----------
+    fc_mean <- annual_growth_all %>%
+      dplyr::filter(Country == country, type == "real_growth") %>%
+      tidyr::pivot_longer(cols = dplyr::all_of(fc_year_cols),
+                          names_to = "year", values_to = "mean") %>%
+      dplyr::mutate(year = as.integer(year)) %>%
+      dplyr::arrange(year)
+    
+    fc_q10 <- annual_growth_all %>%
+      dplyr::filter(Country == country, type == "real_growth_q10") %>%
+      tidyr::pivot_longer(cols = dplyr::all_of(fc_year_cols),
+                          names_to = "year", values_to = "q10") %>%
+      dplyr::mutate(year = as.integer(year)) %>%
+      dplyr::arrange(year)
+    
+    fc_q90 <- annual_growth_all %>%
+      dplyr::filter(Country == country, type == "real_growth_q90") %>%
+      tidyr::pivot_longer(cols = dplyr::all_of(fc_year_cols),
+                          names_to = "year", values_to = "q90") %>%
+      dplyr::mutate(year = as.integer(year)) %>%
+      dplyr::arrange(year)
+    
+    if (nrow(fc_mean) == 0) stop("No forecast real_growth row found in annual_growth_all.")
+    if (nrow(fc_q10)  == 0) stop("No forecast real_growth_q10 row found in annual_growth_all.")
+    if (nrow(fc_q90)  == 0) stop("No forecast real_growth_q90 row found in annual_growth_all.")
+    
+    # Merge forecast mean + quantiles
+    fc_long <- fc_mean %>%
+      dplyr::left_join(fc_q10, by = "year") %>%
+      dplyr::left_join(fc_q90, by = "year")
+    
+    # Keep only forecast years >= (last_obs_year + 1)
+    fc_only <- fc_long %>%
+      dplyr::filter(year >= last_obs_year + 1L)
+    
+    # Link point at 2024: set q10=q90=observed value so ribbon starts in 2024
+    link_point <- obs_long %>%
+      dplyr::filter(year == last_obs_year) %>%
+      dplyr::transmute(
+        year,
+        mean = value,
+        q10  = value,
+        q90  = value
+      )
+    
+    # Forecast line includes the 2024 link point
+    fc_for_line <- dplyr::bind_rows(link_point, fc_only) %>%
+      dplyr::arrange(year)
+    
+    # Ribbon also includes the 2024 link point
+    fc_for_ribbon <- dplyr::bind_rows(link_point, fc_only) %>%
+      dplyr::arrange(year)
+    
+    # ---------- Plot ----------
+    ggplot2::ggplot() +
+      # Observed (blue)
+      ggplot2::geom_line(
+        data = obs_long,
+        ggplot2::aes(x = year, y = value),
+        color = "blue",
+        linewidth = 1
+      ) +
+      # Forecast CI (red ribbon)
+      ggplot2::geom_ribbon(
+        data = fc_for_ribbon,
+        ggplot2::aes(x = year, ymin = q10, ymax = q90),
+        fill = "red",
+        alpha = 0.15
+      ) +
+      # Forecast mean (red), including link from 2024 to 2025
+      ggplot2::geom_line(
+        data = fc_for_line,
+        ggplot2::aes(x = year, y = mean),
+        color = "red",
+        linewidth = 1
+      ) +
+      ggplot2::labs(
+        title = paste0(country, " – Annual Real GDP Growth: Observed vs Forecast"),
+        x = "Year",
+        y = "Real GDP growth (%)"
+      ) +
+      ggplot2::theme_minimal()
+  }
   
