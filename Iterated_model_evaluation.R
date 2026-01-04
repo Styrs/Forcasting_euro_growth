@@ -12,7 +12,8 @@ Euro_Countries_GDP_Growth_Log <- read_excel("data.xlsx")
 
 
 evaluate_model <- function (Euro_Countries_GDP_Growth_Log,first_quarter,initial_end_quarter,
-                            last_end_quarter,max_data_quarter,forecast_horizons,results_table_bench,error_matrix_bench,logdiff_to_train_on) {
+                            last_end_quarter,max_data_quarter,forecast_horizons,results_table_bench,error_matrix_bench,
+                            logdiff_to_train_on,number_of_draw_of_Forecast,pred_var_table_bench) {
 
   
   # ----------------------------------------------------------------------------
@@ -33,6 +34,8 @@ evaluate_model <- function (Euro_Countries_GDP_Growth_Log,first_quarter,initial_
   
   logdiff_to_train_on <- logdiff_to_train_on
   
+  number_of_draw_of_Forecast <- number_of_draw_of_Forecast
+  pred_var_table_bench <- pred_var_table_bench #the forecasted variance of the benchmark
 
 
 
@@ -52,6 +55,7 @@ evaluate_model <- function (Euro_Countries_GDP_Growth_Log,first_quarter,initial_
   
   # To store results for each country
   all_country_results <- list()
+  simulation_draw_all <- list()
   
   for (country_name in countries) {
     
@@ -99,6 +103,15 @@ evaluate_model <- function (Euro_Countries_GDP_Growth_Log,first_quarter,initial_
         horizons      = forecast_horizons
       )
       
+      key <- paste0(country_name, "_", sprintf("%.2f", end_quarter))
+      
+      simulation_draw_all[[key]] <- simulate_forecast_paths_tagged(
+        forecast_values = fc_growth$forecast_values,
+        forecast_SD     = fc_growth$forecast_SD,
+        loop            = number_of_draw_of_Forecast,
+        end_quarter     = end_quarter,
+        country_name    = country_name
+      )
       
       
       growth_table <- data.frame(
@@ -132,6 +145,9 @@ evaluate_model <- function (Euro_Countries_GDP_Growth_Log,first_quarter,initial_
       all_country_results[[country_name]] <- NULL
     }
   }
+  
+  simulated_path_all <- dplyr::bind_rows(simulation_draw_all)
+  
   
   # Optional: single big data.frame with *all* countries
   all_growth_results <- do.call(rbind, all_country_results)
@@ -250,12 +266,62 @@ evaluate_model <- function (Euro_Countries_GDP_Growth_Log,first_quarter,initial_
   xtable(lb_table)
 
   
+  
+  # ----------------------------------------------------------------------------
+  # CHAPTER 6  – Density forecast 
+  # ----------------------------------------------------------------------------
+  
+  #transform into nominals
+  simulated_path_all_nominal <- logdiff_sim_to_nominal(simulated_path_all, Euro_Countries_GDP_Growth_Log)
+  
+  #get the Eurozone paths
+  simulated_path_all_with_eurozone <- add_eurozone_logdiff_to_simulated_path_all(
+    simulated_path_all        = simulated_path_all,
+    simulated_path_all_nominal= simulated_path_all_nominal,
+    Euro_Countries_GDP_Growth_Log = Euro_Countries_GDP_Growth_Log
+  )
+  
+  #compute the forecasted variance 
+  
+  pred_var_table <- compute_predictive_variance_from_draws(
+    simulated_path_all_with_eurozone)
+  
+  #Compute the PIT and do the Berkowitz test
+  results_table <- add_berkowitz_test(
+    results_table = results_table,
+    pred_var_table = pred_var_table,
+    Euro_Countries_GDP_Growth_Log = Euro_Countries_GDP_Growth_Log,
+    logdiff_to_train_on = "gdp_growth_log_wins_001",
+    country = "Eurozone"
+  )
+  
+  #test the difference of the predictive density with the benchmark 
+  results_table <- add_ag_density_test(
+    results_table          = results_table,
+    pred_var_table         = pred_var_table,
+    pred_var_table_bench   = pred_var_table_bench,
+    Euro_Countries_GDP_Growth_Log = Euro_Countries_GDP_Growth_Log,
+    country = "Eurozone"
+  )
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
+  
   return(list(
     results_table        = results_table,
     error_matrix         = error_matrix,
     MZ_table             = MZ_table,
     lb_table             = lb_table,
-    all_growth_results   = all_growth_results
+    all_growth_results   = all_growth_results,
+    pred_var_table       = pred_var_table,
+    simulated_path_all_with_eurozone = simulated_path_all_with_eurozone
   ))
 }
 
