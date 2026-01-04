@@ -24,7 +24,7 @@ library(zoo)
   download.file(url_data_countries, destfile = "data.xlsx", mode = "wb")
   annual_growth_observed <- read_excel("data.xlsx")
   
-  run_the_forecast <- function(Euro_Countries_GDP_Growth_Log,annual_growth_observed,annual_deflator_forecast){
+  run_the_forecast <- function(Euro_Countries_GDP_Growth_Log,annual_growth_observed,annual_deflator_forecast,confidence_quantiles){
   
   ###################################################################################
   #The forecast
@@ -73,10 +73,14 @@ library(zoo)
         horizons      = 1:10
       )
       
+      # compute the quantiles (Gaussian assumption)
+      quantiles_forecast <- compute_forecast_quantiles(fc_log_growth, probs = c(confidence_quantiles, 1-confidence_quantiles))
+      
       # store results for this country
       all_country_results[[country_name]] <- list(
         arma_fit      = arma_fit,
         forecast      = fc_log_growth,
+        forecast_q    = quantiles_forecast,
         train_data    = country_data$train_data
       )
     
@@ -94,19 +98,29 @@ library(zoo)
         res <- all_country_results[[country_name]]
         
         tibble(
-          Country        = country_name,
-          Horizon        = 1:10,
-          Forecasted_Quarter  = res$forecast$forecast_dates,
-          Forecast_Growth_logdiff = res$forecast$forecast_values,
-          ARMA           = paste0("ARMA(",
-                                  res$arma_fit$order["p"], ",",
-                                  res$arma_fit$order["q"], ")"),
+          Country              = country_name,
+          Horizon              = 1:10,
+          Forecasted_Quarter   = res$forecast$forecast_dates,
+          
+          Forecast_Growth_logdiff      = res$forecast$forecast_values,
+          Forecast_Growth_logdiff_q10  = res$forecast_q$q10,
+          Forecast_Growth_logdiff_q90  = res$forecast_q$q90,
+          
+          ARMA = paste0(
+            "ARMA(",
+            res$arma_fit$order["p"], ",",
+            res$arma_fit$order["q"], ")"
+          )
         )
       })
     )
     
-    forecast_table_growth_countries <- add_forecast_nominal(forecast_table_growth_countries,Euro_Countries_GDP_Growth_Log, MultiHorizonSets = FALSE)
-    
+    forecast_table_growth_countries <- add_forecast_nominal(
+      forecast_table_growth_countries,
+      Euro_Countries_GDP_Growth_Log,
+      MultiHorizonSets = FALSE,
+      add_quantiles = TRUE
+    )
     
     
     
@@ -115,20 +129,22 @@ library(zoo)
     #-------------------------------------------------------------------------------
     
     
-    #1 prepare the Eurozone countries in the data set
     eurozone_final <- forecast_table_growth_countries %>%
       group_by(Forecasted_Quarter, Horizon) %>%
       summarise(
-        Forecast_Nominal_GDP = sum(Forecast_Nominal_GDP, na.rm = TRUE),
-        last_observed_quarter = first(last_observed_quarter),  # take the common value
+        Forecast_Nominal_GDP     = sum(Forecast_Nominal_GDP, na.rm = TRUE),
+        Forecast_Nominal_GDP_q10 = sum(Forecast_Nominal_GDP_q10, na.rm = TRUE),
+        Forecast_Nominal_GDP_q90 = sum(Forecast_Nominal_GDP_q90, na.rm = TRUE),
+        last_observed_quarter    = first(last_observed_quarter),
         .groups = "drop"
       ) %>%
       mutate(
-        Country = "Eurozone",
+        Country               = "Eurozone",
         Forecast_Growth_logdiff = NA_real_,
-        Forecast_Growth_rate = NA_real_,
+        Forecast_Growth_rate    = NA_real_,
         ARMA = NA_character_
       )
+    
     
     forecast_table_growth_countries <- bind_rows(
       forecast_table_growth_countries,
@@ -136,8 +152,12 @@ library(zoo)
     )
     
     #2 compute the Eurozone's log-diff
-    forecast_table_growth_countries <- compute_eurozone_logdiff(forecast_table_growth_countries,Euro_Countries_GDP_Growth_Log,MultiHorizonSets = FALSE)
-    
+    forecast_table_growth_countries <- compute_eurozone_logdiff(
+      forecast_table_growth_countries,
+      Euro_Countries_GDP_Growth_Log,
+      MultiHorizonSets = FALSE,
+      add_quantiles = TRUE
+    )
     
     #-------------------------------------------------------------------------------
     # CHAPTER 4 – Compute the quarterly and annual growth rate
@@ -146,7 +166,9 @@ library(zoo)
     #3 compute the growth rate from the log-diff
     forecast_table_growth_countries <- forecast_table_growth_countries %>%
       mutate(
-        Forecast_Growth_rate = 100 * (exp(Forecast_Growth_logdiff / 100) - 1),
+        Forecast_Growth_rate      = 100 * (exp(Forecast_Growth_logdiff / 100) - 1),
+        Forecast_Growth_rate_q10  = 100 * (exp(Forecast_Growth_logdiff_q10 / 100) - 1),
+        Forecast_Growth_rate_q90  = 100 * (exp(Forecast_Growth_logdiff_q90 / 100) - 1)
       )
     
     #compute the yearly nominal GDP
@@ -159,7 +181,7 @@ library(zoo)
     annual_growth_forecast <- add_deflator_forecast_to_annual(annual_growth_forecast,annual_deflator_forecast)
   
     #compute the yearly real GDP
-    annual_growth_forecast <- add_real_gdp(annual_growth_forecast)
+    annual_growth_forecast <- add_real_gdp(annual_growth_forecast, add_quantiles = TRUE)
     
     #compute the yearly real growth
     annual_growth_forecast <- compute_growth(annual_growth_forecast,annual_growth_observed, which = "real")
