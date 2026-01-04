@@ -16,7 +16,7 @@ Euro_Countries_GDP_Growth_Log <- read_excel("data.xlsx")
 
 
 evaluate_benchmark_model <- function (Euro_Countries_GDP_Growth_Log,first_quarter,initial_end_quarter,
-                                      last_end_quarter,max_data_quarter,forecast_horizons,logdiff_to_train_on) {
+                                      last_end_quarter,max_data_quarter,forecast_horizons,logdiff_to_train_on,number_of_draw_of_Forecast) {
  
   
   # ----------------------------------------------------------------------------
@@ -32,6 +32,8 @@ evaluate_benchmark_model <- function (Euro_Countries_GDP_Growth_Log,first_quarte
   forecast_horizons <- forecast_horizons      
   
   logdiff_to_train_on <- logdiff_to_train_on
+  
+  number_of_draw_of_Forecast <- number_of_draw_of_Forecast
   
   
   # ----------------------------------------------------------------------------
@@ -57,6 +59,7 @@ evaluate_benchmark_model <- function (Euro_Countries_GDP_Growth_Log,first_quarte
   
   # To store results for each country
   all_country_results <- list()
+  simulation_draw_all <- list()
   
   for (country_name in countries) {
     
@@ -69,6 +72,7 @@ evaluate_benchmark_model <- function (Euro_Countries_GDP_Growth_Log,first_quarte
     iteration     <- 1
     
     country_results <- list()
+    
     
     while (TRUE) {
       
@@ -104,6 +108,15 @@ evaluate_benchmark_model <- function (Euro_Countries_GDP_Growth_Log,first_quarte
         horizons      = forecast_horizons
       )
       
+      key <- paste0(country_name, "_", sprintf("%.2f", end_quarter))
+      
+      simulation_draw_all[[key]] <- simulate_forecast_paths_tagged(
+        forecast_values = fc_growth$forecast_values,
+        forecast_SD     = fc_growth$forecast_SD,
+        loop            = number_of_draw_of_Forecast,
+        end_quarter     = end_quarter,
+        country_name    = country_name
+      )
       
       
       growth_table <- data.frame(
@@ -137,6 +150,8 @@ evaluate_benchmark_model <- function (Euro_Countries_GDP_Growth_Log,first_quarte
       all_country_results[[country_name]] <- NULL
     }
   }
+  
+  simulated_path_all_bench <- dplyr::bind_rows(simulation_draw_all)
   
   # Optional: single big data.frame with *all* countries
   all_growth_results_bench <- do.call(rbind, all_country_results)
@@ -225,12 +240,32 @@ evaluate_benchmark_model <- function (Euro_Countries_GDP_Growth_Log,first_quarte
   xtable(MZ_table_bench)
   xtable(lb_table_bench)
   xtable(results_table_bench)
+  
+  # ----------------------------------------------------------------------------
+  # CHAPTER 5 – Prepare for the density forecast eval
+  # ----------------------------------------------------------------------------
+  
+  #transform into nominals
+  simulated_path_all_nominal_bench <- logdiff_sim_to_nominal(simulated_path_all_bench, Euro_Countries_GDP_Growth_Log)
+  
+  #get the Eurozone paths
+  simulated_path_all_with_eurozone_bench <- add_eurozone_logdiff_to_simulated_path_all(
+    simulated_path_all        = simulated_path_all_bench,
+    simulated_path_all_nominal= simulated_path_all_nominal_bench,
+    Euro_Countries_GDP_Growth_Log = Euro_Countries_GDP_Growth_Log
+  )
+  
+  #compute the forecasted variance 
+  
+  pred_var_table_bench <- compute_predictive_variance_from_draws(
+    simulated_path_all_with_eurozone_bench)
 
   return(list(
     all_growth_results_bench = all_growth_results_bench,
     results_table_bench     = results_table_bench,
     MZ_table_bench          = MZ_table_bench,
     lb_table_bench          = lb_table_bench,
-    error_matrix_bench      = error_matrix_bench
+    error_matrix_bench      = error_matrix_bench,
+    pred_var_table_bench = pred_var_table_bench
   ))
 }
